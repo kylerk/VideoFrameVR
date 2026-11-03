@@ -1,0 +1,20 @@
+name: Feature request
+description: Something the app should do
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you'd like
+      description: What you want to do, and why the app doesn't let you today.
+    validations:
+      required: true
+  - type: input
+    id: ai
+    attributes:
+      label: AI use
+      description: >
+        Write "None" if you wrote this yourself. If AI wrote or rewrote any
+        of it, name the model and the harness, for example "Claude Opus 5.5 in
+        OpenCode". Requests that hide AI use are closed.
+    validations:
+      required: true

@@ -1,0 +1,368 @@
+From: VideoFrameVR contributors
+Date: Wed, 28 Oct 2026
+Subject: [PATCH] Reuse AES round keys and accelerate blocks on ARM64 and x86_64
+
+Base: libsmb2-6.3, 2bcb014b23a8c8cccf534eea8bda2fe5df453cfd
+
+Expand AES-128 keys once per CMAC/CCM operation rather than once per block.
+Share the CCM schedule between authentication and counter-mode encryption.
+Keep the CMAC/CCM algorithms and tag verification unchanged.
+
+Select ARMv8 Crypto Extensions on Linux using AT_HWCAP/HWCAP_AES and AES-NI
+on x86_64 using __builtin_cpu_supports("aes"). Intrinsics are confined to
+target-attributed functions; other CPUs and compilers keep the bundled
+software cipher. No new dependency or global architecture flags are needed.
+
+The AES changes retain the original public-domain grant. Changes to the
+LGPL files are LGPL-2.1-or-later, with dated modification notices in each file.
+
+---
+diff --git a/lib/aes.c b/lib/aes.c
+index ebe841a..c8a8524 100644
+--- a/lib/aes.c
++++ b/lib/aes.c
+@@ -1,5 +1,7 @@
+ /* From https://github.com/bitdust/tiny-AES128-C
+  * Licenced as Public Domain
++ * Modified 2026-10-28: reusable AES-128 encryption keys and CPU dispatch.
++ * These modifications are also dedicated to the public domain.
+  */
+ 
+ /*
+@@ -41,6 +43,16 @@ NOTE:   String length must be evenly divisible by 16byte (str_len % 16 == 0)
+ #include <string.h> // CBC mode, for memset
+ #include "aes.h"
+ 
++#if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
++#include <wmmintrin.h>
++#define AES128_X86 1
++#elif (defined(__GNUC__) || defined(__clang__)) && defined(__aarch64__) && defined(__linux__)
++#include <arm_neon.h>
++#include <sys/auxv.h>
++#include <asm/hwcap.h>
++#define AES128_ARM 1
++#endif
++
+ 
+ /*****************************************************************************/
+ /* Defines:                                                                  */
+@@ -210,7 +222,7 @@ static void KeyExpansion(const uint8_t* Key, uint8_t* roundKey)
+ 
+ // This function adds the round key to state.
+ // The round key is added to the state by an XOR function.
+-static void AddRoundKey(uint8_t* roundKey, state_t* state, uint8_t round)
++static void AddRoundKey(const uint8_t* roundKey, state_t* state, uint8_t round)
+ {
+   uint8_t i,j;
+   for(i=0;i<4;++i)
+@@ -374,7 +386,7 @@ static void InvShiftRows(state_t* state)
+ 
+ 
+ // Cipher is the main function that encrypts the PlainText.
+-static void Cipher(uint8_t* roundKey, state_t* state)
++static void Cipher(const uint8_t* roundKey, state_t* state)
+ {
+   uint8_t round = 0;
+ 
+@@ -440,19 +452,73 @@ static void BlockCopy(uint8_t* output, uint8_t* input)
+ /*****************************************************************************/
+ #if defined(ECB) && ECB
+ 
++static void AES128_encrypt_software(const uint8_t* roundKey,
++                                    const uint8_t* input, uint8_t* output)
++{
++  memmove(output, input, KEYLEN);
++  Cipher(roundKey, (state_t*)output);
++}
+ 
+-void AES128_ECB_encrypt(uint8_t* input, const uint8_t* key, uint8_t* output)
++#ifdef AES128_X86
++__attribute__((target("aes,sse2")))
++static void AES128_encrypt_hardware(const uint8_t* roundKey,
++                                    const uint8_t* input, uint8_t* output)
+ {
+-  // The array that stores the round keys.
+-  uint8_t roundKey[176];
++  __m128i state = _mm_loadu_si128((const __m128i*)input);
++  int round;
+ 
+-  // Copy input to output, and work in-memory on output
+-  BlockCopy(output, input);
++  state = _mm_xor_si128(state, _mm_loadu_si128((const __m128i*)roundKey));
++  for (round = 1; round < Nr; round++) {
++    state = _mm_aesenc_si128(state,
++                            _mm_loadu_si128((const __m128i*)(roundKey + round * 16)));
++  }
++  state = _mm_aesenclast_si128(state,
++                              _mm_loadu_si128((const __m128i*)(roundKey + Nr * 16)));
++  _mm_storeu_si128((__m128i*)output, state);
++}
++#elif defined(AES128_ARM)
++__attribute__((target("+crypto")))
++static void AES128_encrypt_hardware(const uint8_t* roundKey,
++                                    const uint8_t* input, uint8_t* output)
++{
++  uint8x16_t state = vld1q_u8(input);
++  int round;
+ 
+-  KeyExpansion(key, roundKey);
++  /* AESE adds the round key before SubBytes/ShiftRows, unlike AES-NI. */
++  for (round = 0; round < Nr - 1; round++) {
++    state = vaesmcq_u8(vaeseq_u8(state, vld1q_u8(roundKey + round * 16)));
++  }
++  state = vaeseq_u8(state, vld1q_u8(roundKey + (Nr - 1) * 16));
++  vst1q_u8(output, veorq_u8(state, vld1q_u8(roundKey + Nr * 16)));
++}
++#endif
+ 
+-  // The next function call encrypts the PlainText with the Key using AES algorithm.
+-  Cipher(roundKey, (state_t*)output);
++void AES128_init(struct AES128_context* ctx, const uint8_t* key)
++{
++  KeyExpansion(key, ctx->roundKey);
++  ctx->encrypt = AES128_encrypt_software;
++#ifdef AES128_X86
++  if (__builtin_cpu_supports("aes")) {
++    ctx->encrypt = AES128_encrypt_hardware;
++  }
++#elif defined(AES128_ARM)
++  if (getauxval(AT_HWCAP) & HWCAP_AES) {
++    ctx->encrypt = AES128_encrypt_hardware;
++  }
++#endif
++}
++
++void AES128_encrypt_block(const struct AES128_context* ctx,
++                          const uint8_t* input, uint8_t* output)
++{
++  ctx->encrypt(ctx->roundKey, input, output);
++}
++
++void AES128_ECB_encrypt(uint8_t* input, const uint8_t* key, uint8_t* output)
++{
++  struct AES128_context ctx;
++  AES128_init(&ctx, key);
++  AES128_encrypt_block(&ctx, input, output);
+ }
+ 
+ void AES128_ECB_decrypt(uint8_t* input, const uint8_t* key, uint8_t *output)
+diff --git a/lib/aes.h b/lib/aes.h
+index 660edc3..b081f37 100644
+--- a/lib/aes.h
++++ b/lib/aes.h
+@@ -1,5 +1,7 @@
+ /* From https://github.com/bitdust/tiny-AES128-C
+  * Licenced as Public Domain
++ * Modified 2026-10-28: reusable AES-128 encryption keys and CPU dispatch.
++ * These modifications are also dedicated to the public domain.
+  */
+ 
+ #ifndef _AES_H_
+@@ -31,6 +33,15 @@
+ 
+ #if defined(ECB) && ECB
+ 
++struct AES128_context {
++  uint8_t roundKey[176];
++  void (*encrypt)(const uint8_t*, const uint8_t*, uint8_t*);
++};
++
++void AES128_init(struct AES128_context* ctx, const uint8_t* key);
++void AES128_encrypt_block(const struct AES128_context* ctx,
++                          const uint8_t* input, uint8_t* output);
++
+ void AES128_ECB_encrypt(uint8_t* input, const uint8_t* key, uint8_t *output);
+ void AES128_ECB_decrypt(uint8_t* input, const uint8_t* key, uint8_t *output);
+ 
+diff --git a/lib/aes128ccm.c b/lib/aes128ccm.c
+index 126318f..44394e2 100644
+--- a/lib/aes128ccm.c
++++ b/lib/aes128ccm.c
+@@ -2,6 +2,9 @@
+ /*
+    Copyright (C) 2019 by Ronnie Sahlberg <ronniesahlberg@gmail.com>
+ 
++   Modified 2026-10-28: share one expanded AES key across CCM's MAC and CTR.
++   Modifications licensed under the same LGPL-2.1-or-later terms.
++
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU Lesser General Public License as published by
+    the Free Software Foundation; either version 2.1 of the License, or
+@@ -62,7 +65,7 @@ static inline void bxory(unsigned char *b, unsigned char *y, size_t num)
+         }
+ }
+ 
+-static void ccm_generate_T(unsigned char *key,
++static void ccm_generate_T(const struct AES128_context *ctx,
+                            unsigned char *nonce, size_t nlen,
+                            unsigned char *aad, size_t alen,
+                            unsigned char *p, size_t plen,
+@@ -72,7 +75,7 @@ static void ccm_generate_T(unsigned char *key,
+         uint16_t l;
+ 
+         aes_ccm_generate_b0(nonce, nlen, alen, plen, mlen, &b[0]);
+-        AES128_ECB_encrypt(b, key, y);
++        AES128_encrypt_block(ctx, b, y);
+ 
+         /* Create Aad */
+         if (alen) {
+@@ -87,7 +90,7 @@ static void ccm_generate_T(unsigned char *key,
+                 alen -= l;
+ 
+                 bxory(b, y, 16);
+-                AES128_ECB_encrypt(b, key, y);
++                AES128_encrypt_block(ctx, b, y);
+ 
+                 while (alen) {
+                         memset(b, 0, 16);
+@@ -97,7 +100,7 @@ static void ccm_generate_T(unsigned char *key,
+                         alen -= l;
+ 
+                         bxory(b, y, 16);
+-                        AES128_ECB_encrypt(b, key, y);
++                        AES128_encrypt_block(ctx, b, y);
+                 }
+         }
+ 
+@@ -110,13 +113,13 @@ static void ccm_generate_T(unsigned char *key,
+                 plen -= l;
+ 
+                 bxory(b, y, 16);
+-                AES128_ECB_encrypt(b, key, y);
++                AES128_encrypt_block(ctx, b, y);
+         }
+ 
+         memcpy(m, y, mlen);
+ }
+ 
+-static void ccm_generate_s(unsigned char *key, unsigned char *nonce, size_t nlen,
++static void ccm_generate_s(const struct AES128_context *ctx, unsigned char *nonce, size_t nlen,
+                            size_t plen, int i, unsigned char *s)
+ {
+         uint32_t l;
+@@ -129,10 +132,10 @@ static void ccm_generate_s(unsigned char *key, unsigned char *nonce, size_t nlen
+ 
+         memcpy(&s[1], nonce, nlen);
+ 
+-        AES128_ECB_encrypt(s, key, s);
++        AES128_encrypt_block(ctx, s, s);
+ }
+ 
+-static void aes_ccm_crypt(unsigned char *key,
++static void aes_ccm_crypt(const struct AES128_context *ctx,
+                           unsigned char *nonce, size_t nlen,
+                           unsigned char *p, size_t plen)
+ {
+@@ -143,7 +146,7 @@ static void aes_ccm_crypt(unsigned char *key,
+         j = 0;
+         while (plen) {
+                 l = (plen > 16) ? 16 : plen;
+-                ccm_generate_s(key, nonce, nlen, plen, j + 1, &s[0]);
++                ccm_generate_s(ctx, nonce, nlen, plen, j + 1, &s[0]);
+                 bxory(&p[j * 16], &s[0], l);
+ 
+                 j++;
+@@ -157,13 +160,15 @@ void aes128ccm_encrypt(unsigned char *key,
+                        unsigned char *p, size_t plen,
+                        unsigned char *m, size_t mlen)
+ {
++        struct AES128_context ctx;
+         unsigned char s[16] _U_;
+ 
+-        ccm_generate_T(key, nonce, nlen, aad, alen, p, plen, m, mlen);
+-        ccm_generate_s(key, nonce, nlen, plen, 0, &s[0]);
++        AES128_init(&ctx, key);
++        ccm_generate_T(&ctx, nonce, nlen, aad, alen, p, plen, m, mlen);
++        ccm_generate_s(&ctx, nonce, nlen, plen, 0, &s[0]);
+         bxory(m, &s[0], mlen);
+ 
+-        aes_ccm_crypt(key, nonce, nlen, p, plen);
++        aes_ccm_crypt(&ctx, nonce, nlen, p, plen);
+ }
+ 
+ int aes128ccm_decrypt(unsigned char *key,
+@@ -172,13 +177,15 @@ int aes128ccm_decrypt(unsigned char *key,
+                       unsigned char *p, size_t plen,
+                       unsigned char *m, size_t mlen)
+ {
++        struct AES128_context ctx;
+         unsigned char s[16] _U_;
+         unsigned char tmp[16];
+ 
+-        aes_ccm_crypt(key, nonce, nlen, p, plen);
++        AES128_init(&ctx, key);
++        aes_ccm_crypt(&ctx, nonce, nlen, p, plen);
+ 
+-        ccm_generate_T(key, nonce, nlen, aad, alen, p, plen, tmp, mlen);
+-        ccm_generate_s(key, nonce, nlen, plen, 0, &s[0]);
++        ccm_generate_T(&ctx, nonce, nlen, aad, alen, p, plen, tmp, mlen);
++        ccm_generate_s(&ctx, nonce, nlen, plen, 0, &s[0]);
+         bxory(tmp, &s[0], mlen);
+ 
+         return memcmp(tmp, m, mlen);
+diff --git a/lib/smb2-signing.c b/lib/smb2-signing.c
+index 61de979..1c0e815 100644
+--- a/lib/smb2-signing.c
++++ b/lib/smb2-signing.c
+@@ -2,6 +2,9 @@
+ /*
+    Copyright (C) 2018 by Ronnie Sahlberg <ronniesahlberg@gmail.com>
+ 
++   Modified 2026-10-28: reuse the expanded AES key throughout CMAC.
++   Modifications licensed under the same LGPL-2.1-or-later terms.
++
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU Lesser General Public License as published by
+    the Free Software Foundation; either version 2.1 of the License, or
+@@ -100,7 +103,7 @@ void aes_cmac_xor(
+ 
+ static
+ void aes_cmac_sub_keys(
+-    uint8_t key[AES128_KEY_LEN],
++    const struct AES128_context *ctx,
+     uint8_t sub_key1[AES128_KEY_LEN],
+     uint8_t sub_key2[AES128_KEY_LEN]
+     )
+@@ -108,7 +111,7 @@ void aes_cmac_sub_keys(
+         uint8_t zero[AES128_KEY_LEN] = {0};
+         static const uint8_t rb[AES128_KEY_LEN] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x87};
+ 
+-        AES128_ECB_encrypt(zero, key, sub_key1);
++        AES128_encrypt_block(ctx, zero, sub_key1);
+         if (aes_cmac_shift_left(sub_key1)) {
+                 aes_cmac_xor(sub_key1, rb);
+         }
+@@ -126,6 +129,7 @@ void smb3_aes_cmac_128(uint8_t key[AES128_KEY_LEN],
+                    uint8_t mac[AES128_KEY_LEN]
+                   )
+ {
++        struct AES128_context ctx;
+         uint8_t sub_key1[AES128_KEY_LEN] = {0};
+         uint8_t sub_key2[AES128_KEY_LEN] = {0};
+         uint8_t scratch[AES128_KEY_LEN] = {0};
+@@ -138,13 +142,14 @@ void smb3_aes_cmac_128(uint8_t key[AES128_KEY_LEN],
+                 n = 1;
+         }
+ 
+-        aes_cmac_sub_keys(key, sub_key1, sub_key2);
++        AES128_init(&ctx, key);
++        aes_cmac_sub_keys(&ctx, sub_key1, sub_key2);
+ 
+         memset(mac, 0, AES128_KEY_LEN);
+ 
+         for (i = 0; i < n - 1; i++) {
+                 aes_cmac_xor(mac, &msg[i*AES128_KEY_LEN]);
+-                AES128_ECB_encrypt(mac, key, scratch);
++                AES128_encrypt_block(&ctx, mac, scratch);
+                 memcpy(mac, scratch, AES128_KEY_LEN);
+         }
+ 
+@@ -159,7 +164,7 @@ void smb3_aes_cmac_128(uint8_t key[AES128_KEY_LEN],
+         }
+ 
+         aes_cmac_xor(mac, scratch);
+-        AES128_ECB_encrypt(mac, key, scratch);
++        AES128_encrypt_block(&ctx, mac, scratch);
+         memcpy(mac, scratch, AES128_KEY_LEN);
+ }
+ 

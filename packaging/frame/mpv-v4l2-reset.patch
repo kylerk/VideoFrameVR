@@ -1,0 +1,1166 @@
+# Private mpv Frame integration. Apply to the pinned 0.40.0 source.
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -54,6 +54,10 @@
+ #include "video/sws_utils.h"
+ #include "video/out/vo.h"
+ 
++// Frame converter (video/out/hwdec/dmabuf_ubwc.c): lets go of a closed
++// V4L2 session's buffers.
++void frame_ubwc_decoder_closed(void);
++
+ #include "options/m_option.h"
+ 
+ static void init_avctx(struct mp_filter *vd);
+@@ -210,6 +214,11 @@
+     bool hwdec_failed;
+     bool hwdec_notified;
+     bool force_eof;
++    bool reopen_v4l2;
++    bool retry_v4l2_allocation;
++    bool retried_v4l2_allocation;
++    bool prefer_v4l2_ubwc;
++    bool v4l2_eof;
+ 
+     bool intra_only;
+     int framedrop_flags;
+@@ -663,10 +672,23 @@
+ {
+     vd_ffmpeg_ctx *ctx = vd->priv;
+ 
++    bool retry = ctx->retry_v4l2_allocation;
++    ctx->retry_v4l2_allocation = false;
++    if (retry) {
++        ctx->retried_v4l2_allocation = true;
++        ctx->prefer_v4l2_ubwc = !ctx->hwdec.copying &&
++                                ctx->hwdec.pix_fmt == AV_PIX_FMT_DRM_PRIME;
++    }
+     uninit_avctx(vd);
+-    int lev = ctx->hwdec_notified ? MSGL_WARN : MSGL_V;
+-    mp_msg(vd->log, lev, "Attempting next decoding method after failure of %.*s.\n",
+-           BSTR_P(ctx->attempted_hwdecs[ctx->num_attempted_hwdecs - 1]));
++    if (retry) {
++        MP_WARN(vd, "Retrying V4L2 once after a startup allocation failure%s.\n",
++                ctx->prefer_v4l2_ubwc ? " using GPU-compatible compressed buffers" : "");
++        ctx->num_attempted_hwdecs--;
++    } else {
++        int lev = ctx->hwdec_notified ? MSGL_WARN : MSGL_V;
++        mp_msg(vd->log, lev, "Attempting next decoding method after failure of %.*s.\n",
++               BSTR_P(ctx->attempted_hwdecs[ctx->num_attempted_hwdecs - 1]));
++    }
+     select_and_set_hwdec(vd);
+     init_avctx(vd);
+ }
+@@ -676,6 +698,8 @@
+     vd_ffmpeg_ctx *ctx = vd->priv;
+ 
+     uninit_avctx(vd);
++    ctx->retry_v4l2_allocation = false;
++    ctx->retried_v4l2_allocation = false;
+ 
+     /*
+      * Reset attempted hwdecs so that if the hwdec list is reconfigured
+@@ -703,6 +727,8 @@
+     vd_ffmpeg_ctx *ctx = vd->priv;
+     struct vd_lavc_params *lavc_param = ctx->opts;
+     struct mp_codec_params *c = ctx->codec;
++    ctx->reopen_v4l2 = false;
++    ctx->v4l2_eof = false;
+ 
+     m_config_cache_update(ctx->opts_cache);
+ 
+@@ -718,6 +744,29 @@
+     if (!lavc_codec)
+         return;
+ 
++    // 10-bit HEVC requires the private Q10C DRM path, never linear NV12, even
++    // for CPU copy-back. Main 10 streams with 8-bit pictures decode as 8-bit.
++    const char *wrapper = lavc_codec->wrapper_name;
++    if (wrapper && strcmp(wrapper, "v4l2m2m") == 0 && c->lav_codecpar) {
++        const AVPixFmtDescriptor *source = av_pix_fmt_desc_get(c->lav_codecpar->format);
++        bool high_depth = source && source->comp[0].depth > 8;
++        bool main10 = !source && lavc_codec->id == AV_CODEC_ID_HEVC &&
++                      c->lav_codecpar->profile == AV_PROFILE_HEVC_MAIN_10;
++        bool non_420 = source && (source->nb_components != 3 ||
++                       source->log2_chroma_w != 1 || source->log2_chroma_h != 1);
++        bool direct_main10 = lavc_codec->id == AV_CODEC_ID_HEVC &&
++                             source && source->comp[0].depth == 10 &&
++                             !ctx->hwdec.copying &&
++                             ctx->hwdec.pix_fmt == AV_PIX_FMT_DRM_PRIME;
++        if (((high_depth || main10) && !direct_main10) || non_420) {
++            MP_WARN(vd, "Skipping V4L2 for unsupported bit depth or chroma on Frame; "
++                        "using software decoding.\n");
++            return;
++        }
++        if (direct_main10)
++            ctx->prefer_v4l2_ubwc = true;
++    }
++
+     const AVCodecDescriptor *desc = avcodec_descriptor_get(lavc_codec->id);
+     ctx->intra_only = desc && (desc->props & AV_CODEC_PROP_INTRA_ONLY);
+ 
+@@ -733,6 +782,26 @@
+     avctx->codec_id = lavc_codec->id;
+     avctx->pkt_timebase = ctx->codec_timebase;
+ 
++    // Bound compressed-input buffering during large-frame decoder startup.
++    // Four buffers retain 60 fps throughput in the Frame VR samples.
++    if (wrapper && strcmp(wrapper, "v4l2m2m") == 0)
++        av_opt_set_int(avctx->priv_data, "num_output_buffers", 4, 0);
++    // Large HEVC frames can exhaust Iris with FFmpeg's default pool of 20,
++    // and too few deadlock. Allow for the stream's reorder delay and frames
++    // retained for presentation beyond the driver's reported minimum (the
++    // direct path stalled a stream that reorders four with eight buffers).
++    // Q10C's asynchronous transfer can retain three additional frames.
++    // Keep H.264's default: too small a pool can stall its reference frames.
++    if (wrapper && strcmp(wrapper, "v4l2m2m") == 0 && avctx->codec_id == AV_CODEC_ID_HEVC) {
++        const AVCodecParameters *par = c->lav_codecpar;
++        int spare = (par ? par->video_delay : 0) + 1;
++        if (par && par->format == AV_PIX_FMT_YUV420P10)
++            spare += 3;
++        av_opt_set_int(avctx->priv_data, "capture_spare", spare, 0);
++    }
++    if (wrapper && strcmp(wrapper, "v4l2m2m") == 0 && ctx->prefer_v4l2_ubwc)
++        av_opt_set_int(avctx->priv_data, "capture_ubwc", 1, 0);
++
+     ctx->pic = av_frame_alloc();
+     if (!ctx->pic)
+         goto error;
+@@ -860,8 +929,18 @@
+ {
+     vd_ffmpeg_ctx *ctx = vd->priv;
+ 
+-    if (ctx->avctx && avcodec_is_open(ctx->avctx))
+-        avcodec_flush_buffers(ctx->avctx);
++    if (ctx->avctx && avcodec_is_open(ctx->avctx)) {
++        const char *wrapper = ctx->avctx->codec->wrapper_name;
++        if (wrapper && strcmp(wrapper, "v4l2m2m") == 0) {
++            // Flush on the next packet, after mpv has released its delayed
++            // frames. Iris's drain seek keeps its admitted session; an
++            // incomplete drain or an unsupported backend still reopens.
++            // Do not poll a drained device while returning delayed pictures.
++            ctx->reopen_v4l2 = true;
++        } else {
++            avcodec_flush_buffers(ctx->avctx);
++        }
++    }
+     ctx->flushing = false;
+     ctx->hwdec_request_reinit = false;
+ }
+@@ -894,7 +973,13 @@
+     mp_free_av_packet(&ctx->avpkt);
+     av_buffer_unref(&ctx->cached_hw_frames_ctx);
+ 
++    const char *wrapper = ctx->avctx && ctx->avctx->codec ? ctx->avctx->codec->wrapper_name : NULL;
++    bool v4l2 = wrapper && strcmp(wrapper, "v4l2m2m") == 0;
+     avcodec_free_context(&ctx->avctx);
++    // Before a new session allocates its capture buffers (a seek reopens
++    // the decoder), so the old ones are not still kept by the converter.
++    if (v4l2)
++        frame_ubwc_decoder_closed();
+ 
+     av_buffer_unref(&ctx->hwdec_dev);
+ 
+@@ -1132,7 +1217,7 @@
+         reset_avctx(vd);
+ }
+ 
+-static void handle_err(struct mp_filter *vd)
++static void handle_err(struct mp_filter *vd, int err)
+ {
+     vd_ffmpeg_ctx *ctx = vd->priv;
+     struct hwdec_opts *hwdec_opts = ctx->hwdec_opts;
+@@ -1141,6 +1226,15 @@
+             ctx->use_hwdec ? " (hardware decoding)" : "");
+ 
+     if (ctx->use_hwdec) {
++        const char *wrapper = ctx->avctx->codec->wrapper_name;
++        if (err == AVERROR(ENOMEM) && wrapper && strcmp(wrapper, "v4l2m2m") == 0) {
++            // Both send_packet and receive_frame can start V4L2 capture.
++            // Replay the saved startup packets once in a fresh session. Iris
++            // can also refuse a compressed capture start once after a seek.
++            ctx->retry_v4l2_allocation = ctx->hw_probing &&
++                                         !ctx->retried_v4l2_allocation;
++            ctx->hwdec_failed = true;
++        }
+         ctx->hwdec_fail_count += 1;
+         if (ctx->hwdec_fail_count >= hwdec_opts->software_fallback)
+             ctx->hwdec_failed = true;
+@@ -1150,6 +1244,22 @@
+ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
+ {
+     vd_ffmpeg_ctx *ctx = vd->priv;
++    if (ctx->reopen_v4l2) {
++        if (!pkt)
++            return AVERROR_EOF;
++        int64_t kept = 0;
++        if (ctx->avctx && ctx->avctx->codec_id == AV_CODEC_ID_HEVC &&
++            av_opt_find(ctx->avctx->priv_data, "drain_seek_status", NULL, 0, 0)) {
++            avcodec_flush_buffers(ctx->avctx);
++            av_opt_get_int(ctx->avctx->priv_data, "drain_seek_status", 0, &kept);
++        }
++        if (kept > 0) {
++            ctx->reopen_v4l2 = false;
++            ctx->v4l2_eof = false;
++        } else {
++            reinit(vd);
++        }
++    }
+     AVCodecContext *avctx = ctx->avctx;
+ 
+     if (ctx->num_requeue_packets && ctx->requeue_packets[0] != pkt)
+@@ -1180,7 +1290,7 @@
+     }
+ 
+     if (ret < 0)
+-        handle_err(vd);
++        handle_err(vd, ret);
+     return ret;
+ }
+ 
+@@ -1204,6 +1314,8 @@
+ 
+     if (!avctx || ctx->force_eof)
+         return AVERROR_EOF;
++    if (ctx->reopen_v4l2)
++        return ctx->v4l2_eof ? AVERROR_EOF : AVERROR(EAGAIN);
+ 
+     prepare_decoding(vd);
+ 
+@@ -1211,9 +1323,20 @@
+     if (ctx->num_requeue_packets)
+         send_queued_packet(vd);
+ 
++    if (ctx->hwdec_failed)
++        return AVERROR(EAGAIN);
++
+     int ret = avcodec_receive_frame(avctx, ctx->pic);
+     if (ret < 0) {
+         if (ret == AVERROR_EOF) {
++            // Do not call receive again on a drained V4L2 device, even while
++            // mpv still has delayed frames to return. FFmpeg 7 polls the
++            // drained device again instead of returning EOF a second time.
++            const char *wrapper = avctx->codec->wrapper_name;
++            if (wrapper && strcmp(wrapper, "v4l2m2m") == 0) {
++                ctx->reopen_v4l2 = true;
++                ctx->v4l2_eof = true;
++            }
+             // If flushing was initialized earlier and has ended now, make it
+             // start over in case we get new packets at some point in the future.
+             // This must take the delay queue into account, so avctx returns EOF
+@@ -1223,11 +1346,23 @@
+         } else if (ret == AVERROR(EAGAIN)) {
+             // just retry after caller writes a packet
+         } else {
+-            handle_err(vd);
++            handle_err(vd, ret);
+         }
+         return ret;
+     }
+ 
++    // FFmpeg's V4L2 wrapper returns success even for driver-marked damaged
++    // frames. Discard them and use mpv's existing consecutive-error fallback
++    // instead of presenting corrupt capture memory as a successful frame.
++    const char *wrapper = avctx->codec->wrapper_name;
++    if (wrapper && strcmp(wrapper, "v4l2m2m") == 0 &&
++        (ctx->pic->decode_error_flags || (ctx->pic->flags & AV_FRAME_FLAG_CORRUPT)))
++    {
++        av_frame_unref(ctx->pic);
++        handle_err(vd, AVERROR_INVALIDDATA);
++        return AVERROR_INVALIDDATA;
++    }
++
+     mp_codec_info_from_av(avctx, ctx->codec);
+ 
+     // If something was decoded successfully, it must return a frame with valid
+@@ -1243,7 +1378,7 @@
+     if (mpi->imgfmt == IMGFMT_CUDA && !mpi->planes[0]) {
+         MP_ERR(vd, "CUDA frame without data. This is a FFmpeg bug.\n");
+         talloc_free(mpi);
+-        handle_err(vd);
++        handle_err(vd, AVERROR_INVALIDDATA);
+         return AVERROR_BUG;
+     }
+ 
+@@ -1255,6 +1390,20 @@
+ 
+     av_frame_unref(ctx->pic);
+ 
++    // V4L2's CPU frames still own capture buffers. Detach so an old displayed
++    // frame cannot retain the decoder across a seek. Reuse the software pool:
++    // allocating and first-touching a fresh 8K buffer every frame is too slow.
++    // DRM PRIME frames have independently exported DMA-BUFs: the private
++    // FFmpeg fork closes the decoder without waiting for those GPU references.
++    if (wrapper && strcmp(wrapper, "v4l2m2m") == 0 &&
++        mpi->imgfmt != IMGFMT_DRMPRIME) {
++        struct mp_image *owned = mp_image_pool_new_copy(ctx->hwdec_swpool, mpi);
++        talloc_free(mpi);
++        mpi = owned;
++        if (!mpi)
++            return AVERROR(ENOMEM);
++    }
++
+     MP_TARRAY_APPEND(ctx, ctx->delay_queue, ctx->num_delay_queue, mpi);
+     return ret;
+ }
+@@ -1315,7 +1464,7 @@
+         if (!res) {
+             MP_ERR(vd, "Could not copy back hardware decoded frame.\n");
+             ctx->hwdec_fail_count = INT_MAX - 1; // force fallback
+-            handle_err(vd);
++            handle_err(vd, AVERROR_UNKNOWN);
+             return AVERROR_UNKNOWN;
+         }
+     }
+@@ -1391,6 +1540,10 @@
+ 
+     flush_all(vd);
+ 
++    // A seek needs a new packet, not an EOF frame. Reporting EOF here makes
++    // lavc_process stop feeding the video decoder while audio keeps playing.
++    ctx->v4l2_eof = false;
++
+     ctx->state = (struct lavc_state){0};
+     ctx->framedrop_flags = 0;
+ }
+--- a/meson.build
++++ b/meson.build
+@@ -1457,6 +1457,8 @@
+ 
+ features += {'dmabuf-interop-gl': features['egl'] and features['drm']}
+ if features['dmabuf-interop-gl']
++    dependencies += dependency('vulkan')
++    sources += files('video/out/hwdec/dmabuf_ubwc.c')
+     sources += files('video/out/hwdec/dmabuf_interop_gl.c')
+ endif
+ 
+--- a/video/out/hwdec/dmabuf_interop_gl.c
++++ b/video/out/hwdec/dmabuf_interop_gl.c
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include "dmabuf_interop.h"
++#include "dmabuf_ubwc.h"
+ 
+ #include <drm_fourcc.h>
+ #include <EGL/egl.h>
+@@ -52,6 +53,7 @@
+ #define EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT 0x344A
+ 
+ struct vaapi_gl_mapper_priv {
++    struct frame_ubwc *ubwc;
+     GLuint gl_textures[AV_DRM_MAX_PLANES];
+     EGLImageKHR images[AV_DRM_MAX_PLANES];
+ 
+@@ -166,6 +168,7 @@
+ 
+     if (p) {
+         gl_delete_textures(mapper);
++        frame_ubwc_destroy(p->ubwc);
+         talloc_free(p);
+         p_mapper->interop_mapper_priv = NULL;
+     }
+@@ -181,9 +184,9 @@
+ 
+ #define ADD_PLANE_ATTRIBS(nplane) \
+     do { \
+-    const AVDRMPlaneDescriptor *plane = &p_mapper->desc.layers[i].planes[j]; \
++    const AVDRMPlaneDescriptor *plane = &map_desc->layers[i].planes[j]; \
+     const AVDRMObjectDescriptor *object = \
+-        &p_mapper->desc.objects[plane->object_index]; \
++        &map_desc->objects[plane->object_index]; \
+     ADD_ATTRIB(EGL_DMA_BUF_PLANE ## nplane ## _FD_EXT, object->fd); \
+     ADD_ATTRIB(EGL_DMA_BUF_PLANE ## nplane ## _OFFSET_EXT, plane->offset); \
+     ADD_ATTRIB(EGL_DMA_BUF_PLANE ## nplane ## _PITCH_EXT, plane->pitch); \
+@@ -206,12 +209,22 @@
+ 
+     GL *gl = ra_gl_get(mapper->ra);
+ 
++    const AVDRMFrameDescriptor *map_desc = &p_mapper->desc;
++    if (map_desc->nb_objects == 1 &&
++        map_desc->objects[0].format_modifier == DRM_FORMAT_MOD_QCOM_COMPRESSED) {
++        if (!p->ubwc)
++            p->ubwc = frame_ubwc_create(gl, mapper->log,
++                                        p_mapper->layout.w, p_mapper->layout.h, map_desc->layers[0].format);
++        if (!p->ubwc || !(map_desc = frame_ubwc_convert(p->ubwc, map_desc, mapper->src)))
++            return false;
++    }
++
+     if (p->EGLImageTargetTexStorageEXT) {
+         if (!gl_create_textures(mapper))
+             return false;
+     }
+ 
+-    for (int i = 0, n = 0; i < p_mapper->desc.nb_layers; i++) {
++    for (int i = 0, n = 0; i < map_desc->nb_layers; i++) {
+         /*
+          * As we must map surfaces as one texture per plane, we can only support
+          * a subset of possible multi-plane layer formats. This is due to having
+@@ -219,11 +232,11 @@
+          * have.
+          */
+         uint32_t format[AV_DRM_MAX_PLANES] = {
+-            p_mapper->desc.layers[i].format,
++            map_desc->layers[i].format,
+         };
+ 
+-        if (p_mapper->desc.layers[i].nb_planes > 1) {
+-            switch (p_mapper->desc.layers[i].format) {
++        if (map_desc->layers[i].nb_planes > 1) {
++            switch (map_desc->layers[i].format) {
+             case DRM_FORMAT_NV12:
+             case DRM_FORMAT_NV16:
+                 format[0] = DRM_FORMAT_R8;
+@@ -245,7 +258,7 @@
+             default:
+                 mp_msg(mapper->log, probing ? MSGL_DEBUG : MSGL_ERR,
+                        "Cannot map unknown multi-plane format: 0x%08X\n",
+-                       p_mapper->desc.layers[i].format);
++                       map_desc->layers[i].format);
+                 return false;
+             }
+         } else {
+@@ -283,7 +296,7 @@
+             }
+         }
+ 
+-        for (int j = 0; j < p_mapper->desc.layers[i].nb_planes; j++, n++) {
++        for (int j = 0; j < map_desc->layers[i].nb_planes; j++, n++) {
+             int attribs[48] = {EGL_NONE};
+             int num_attribs = 0;
+ 
+@@ -323,6 +336,8 @@
+     if (!p)
+         return;
+ 
++    frame_ubwc_release(p->ubwc);
++
+     if (p->EGLImageTargetTexStorageEXT) {
+         // textures are immutable, can't reuse
+         gl_delete_textures(mapper);
+--- a/video/out/gpu/libmpv_gpu.c
++++ b/video/out/gpu/libmpv_gpu.c
+@@ -4,6 +4,22 @@
+ #include "mpv/render_gl.h"
+ #include "video.h"
+ #include "video/out/libmpv.h"
++#if HAVE_DMABUF_INTEROP_GL
++#include <errno.h>
++#include <poll.h>
++#include <pthread.h>
++#include <string.h>
++#include <unistd.h>
++#include <sys/eventfd.h>
++#include <EGL/egl.h>
++#include <EGL/eglext.h>
++#include <drm_fourcc.h>
++#include <libavutil/hwcontext_drm.h>
++#include "video/mp_image.h"
++#include "video/out/hwdec/dmabuf_ubwc.h"
++#include "video/out/hwdec/video_export.h"
++#include "video/out/opengl/ra_gl.h"
++#endif
+ 
+ static const struct libmpv_gpu_context_fns *context_backends[] = {
+ #if HAVE_GL
+@@ -16,6 +32,42 @@
+     struct libmpv_gpu_context *context;
+ 
+     struct gl_video *renderer;
++#if HAVE_DMABUF_INTEROP_GL
++    // Frames handed to the app instead of drawn (video_export.h).
++    struct frame_ubwc *exporter;
++    int export_w, export_h;
++    uint32_t export_format;
++    uint64_t exported_frame;  // vo_frame.frame_id of the last export
++    uint64_t exported_id;     // and its converter id, until released
++    uint64_t export_ids;      // never reset when the converter is replaced
++    // Decoder frames handed out as they are (linear NV12, Q10C), each referenced until
++    // the app releases its id.
++    struct linear_export {
++        uint64_t id;
++        struct mp_image *mpi;
++    } linear[16];
++    int num_linear;
++    bool watching;  // frame_ubwc_watch()
++    // Hardware frames drawn, each kept until the GPU has finished the draw
++    // (hold_drawn()), oldest first: with native fences the releaser thread
++    // lets go of each as its fence signals, else render() polls GL fences.
++    struct held_frame {
++        struct mp_image *mpi;
++        GLsync fence;
++        int fd;
++    } held[8];
++    int num_held;
++    int num_releasing;  // removed from held[], but not yet unreferenced
++    bool fences_checked, fence_fds;
++    PFNEGLCREATESYNCKHRPROC CreateSync;
++    PFNEGLDESTROYSYNCKHRPROC DestroySync;
++    PFNEGLDUPNATIVEFENCEFDANDROIDPROC DupNativeFenceFD;
++    pthread_t releaser;
++    pthread_mutex_t lock;
++    pthread_cond_t freed;
++    int wake_fd;
++    bool quit;
++#endif
+ };
+ 
+ struct native_resource_entry {
+@@ -168,11 +220,452 @@
+     return 0;
+ }
+ 
++#if HAVE_DMABUF_INTEROP_GL
++static int export_matrix(enum pl_color_system sys)
++{
++    switch (sys) {
++    case PL_COLOR_SYSTEM_BT_601: return VIDEO_EXPORT_MATRIX_BT601;
++    case PL_COLOR_SYSTEM_BT_709: return VIDEO_EXPORT_MATRIX_BT709;
++    case PL_COLOR_SYSTEM_BT_2020_NC: return VIDEO_EXPORT_MATRIX_BT2020;
++    default: return VIDEO_EXPORT_MATRIX_OTHER;
++    }
++}
++
++static int export_chroma(enum pl_chroma_location loc)
++{
++    switch (loc) {
++    case PL_CHROMA_LEFT: return VIDEO_EXPORT_CHROMA_LEFT;
++    case PL_CHROMA_CENTER: return VIDEO_EXPORT_CHROMA_CENTER;
++    case PL_CHROMA_TOP_LEFT: return VIDEO_EXPORT_CHROMA_TOP_LEFT;
++    default: return VIDEO_EXPORT_CHROMA_OTHER;
++    }
++}
++
++static void release_linear(struct priv *p, uint64_t id)
++{
++    for (int i = 0; i < p->num_linear; i++) {
++        if (p->linear[i].id == id) {
++            mp_image_unrefp(&p->linear[i].mpi);
++            p->linear[i] = p->linear[--p->num_linear];
++            return;
++        }
++    }
++}
++
++// Lets go of the frames the app is done with.
++static void take_releases(struct priv *p, struct video_export *e)
++{
++    for (int i = 0; i < e->release_count && i < VIDEO_EXPORT_MAX_RELEASE; i++) {
++        frame_ubwc_unhold(p->exporter, e->release[i]);
++        release_linear(p, e->release[i]);
++        if (e->release[i] == p->exported_id)
++            p->exported_id = 0;
++    }
++    e->release_count = 0;
++}
++
++// Hands the frame to the app rather than drawing it, if it asked: true then,
++// nothing drawn; exported -1 if the frame is not one the app can sample (the
++// app draws it with another call, without request). Compressed frames go
++// through the Frame's converter, linear NV12 ones (and Q10C ones if the app
++// samples them, accept_q10c) as the decoder wrote them.
++static bool export_frame(struct render_backend *ctx, struct video_export *e,
++                         struct vo_frame *frame)
++{
++    struct priv *p = ctx->priv;
++    take_releases(p, e);
++    e->exported = 0;
++    e->fence_fd = -1;
++    if (!e->request)
++        return false;
++    e->exported = -1;
++    struct mp_image *img = frame->current;
++    if (!img || img->imgfmt != IMGFMT_DRMPRIME)
++        return true;
++    const AVDRMFrameDescriptor *src = (const AVDRMFrameDescriptor *)img->planes[0];
++    struct mp_image_params par = img->params;
++    mp_image_params_guess_csp(&par);
++    struct mp_rect full = {0, 0, img->w, img->h};
++    if (!src || src->nb_objects != 1 || src->nb_layers != 1 ||
++        (src->layers[0].format != DRM_FORMAT_P010 && src->layers[0].format != DRM_FORMAT_NV12) ||
++        par.rotate || (par.crop.x1 && !mp_rect_equals(&par.crop, &full)))
++        return true;
++    uint64_t modifier = src->objects[0].format_modifier;
++    bool linear = modifier == DRM_FORMAT_MOD_LINEAR && src->layers[0].format == DRM_FORMAT_NV12 &&
++                  src->layers[0].nb_planes == 2;
++    if (!linear && modifier != DRM_FORMAT_MOD_QCOM_COMPRESSED)
++        return true;
++    bool held = linear || (e->accept_q10c && src->layers[0].format == DRM_FORMAT_P010 &&
++                           src->layers[0].nb_planes == 2);
++    if (p->exported_id && frame->frame_id == p->exported_frame) {
++        e->exported = 2;  // the app still holds it
++        e->id = p->exported_id;
++        return true;
++    }
++    int fence_fd = -1;
++    if (p->export_ids == UINT64_MAX)
++        return true;
++    uint64_t id;
++    const AVDRMFrameDescriptor *out = src;
++    if (held) {
++        struct mp_image *ref = p->num_linear < MP_ARRAY_SIZE(p->linear) ?
++                               mp_image_new_ref(img) : NULL;
++        if (!ref)
++            return true;
++        id = ++p->export_ids;
++        p->linear[p->num_linear++] = (struct linear_export){id, ref};
++        if (!p->watching)
++            frame_ubwc_watch(e);
++        p->watching = true;
++    } else {
++        if (p->exporter && (p->export_w != img->w || p->export_h != img->h ||
++                            p->export_format != src->layers[0].format)) {
++            // The app's imports keep the old buffers' memory alive.
++            frame_ubwc_destroy(p->exporter);
++            p->exporter = NULL;
++        }
++        if (!p->exporter) {
++            p->exporter = frame_ubwc_create(NULL, ctx->log, img->w, img->h,
++                                            src->layers[0].format);
++            if (!p->exporter)
++                return true;
++            p->export_w = img->w;
++            p->export_h = img->h;
++            p->export_format = src->layers[0].format;
++        }
++        id = ++p->export_ids;
++        out = frame_ubwc_export(p->exporter, src, img, &fence_fd, id);
++        if (!out)
++            return true;
++    }
++    p->exported_frame = frame->frame_id;
++    p->exported_id = id;
++    e->exported = 1;
++    e->fence_fd = fence_fd;
++    e->id = id;
++    e->fd = out->objects[0].fd;
++    e->drm_format = out->layers[0].format;
++    e->modifier = held ? modifier : DRM_FORMAT_MOD_LINEAR;
++    e->buffer_size = out->objects[0].size;
++    for (int i = 0; i < 2; i++) {
++        e->offset[i] = out->layers[0].planes[i].offset;
++        e->pitch[i] = out->layers[0].planes[i].pitch;
++    }
++    e->width = img->w;
++    e->height = img->h;
++    e->matrix = export_matrix(par.repr.sys);
++    e->full_range = par.repr.levels == PL_COLOR_LEVELS_FULL;
++    e->chroma = export_chroma(par.chroma_location);
++    e->bt709_primaries = par.color.primaries == PL_COLOR_PRIM_BT_709;
++    e->sdr = !pl_color_transfer_is_hdr(par.color.transfer) &&
++             par.color.transfer != PL_COLOR_TRC_LINEAR;
++    return true;
++}
++#endif
++
++#if HAVE_DMABUF_INTEROP_GL
++static GL *held_gl(struct priv *p)
++{
++    struct ra *ra = p->context && p->context->ra_ctx ? p->context->ra_ctx->ra : NULL;
++    return ra && ra_is_gl(ra) ? ra_gl_get(ra) : NULL;
++}
++
++static bool wait_fd(int fd)
++{
++    struct pollfd f = {.fd = fd, .events = POLLIN};
++    int r;
++    do {
++        r = poll(&f, 1, 1000);
++    } while (r < 0 && errno == EINTR);
++    return r > 0 && (f.revents & POLLIN) && !(f.revents & (POLLERR | POLLNVAL));
++}
++
++// Failure paths only. References survive a failed drain, even at shutdown.
++static bool finish_draws(struct priv *p)
++{
++    GL *gl = held_gl(p);
++    if (!gl)
++        return false;
++    gl->Finish();
++    return gl->GetError() == GL_NO_ERROR;
++}
++
++// Lets go of each held frame once its fence fd signals.
++static void *releaser(void *arg)
++{
++    struct priv *p = arg;
++    pthread_mutex_lock(&p->lock);
++    while (!p->quit) {
++        // render() only appends and this thread only removes: the first n
++        // entries stay the same while it waits.
++        struct pollfd fds[1 + MP_ARRAY_SIZE(p->held)];
++        int n = p->num_held;
++        fds[0] = (struct pollfd){.fd = p->wake_fd, .events = POLLIN};
++        for (int i = 0; i < n; i++)
++            fds[1 + i] = (struct pollfd){.fd = p->held[i].fd, .events = POLLIN};
++        pthread_mutex_unlock(&p->lock);
++        int r;
++        do {
++            r = poll(fds, 1 + n, -1);
++        } while (r < 0 && errno == EINTR);
++        if (r < 0)
++            usleep(1000);
++        uint64_t wakes;
++        if (fds[0].revents && read(p->wake_fd, &wakes, sizeof(wakes)) < 0) {
++            // nothing to read: woken anyway
++        }
++        struct held_frame done[MP_ARRAY_SIZE(p->held)];
++        int num_done = 0;
++        pthread_mutex_lock(&p->lock);
++        int kept = 0;
++        for (int i = 0; i < p->num_held; i++) {
++            if (r > 0 && i < n && (fds[1 + i].revents & POLLIN) &&
++                !(fds[1 + i].revents & (POLLERR | POLLNVAL)))
++                done[num_done++] = p->held[i];
++            else
++                p->held[kept++] = p->held[i];
++        }
++        p->num_held = kept;
++        if (!num_done)
++            continue;
++        p->num_releasing += num_done;
++        pthread_cond_broadcast(&p->freed);
++        pthread_mutex_unlock(&p->lock);
++        for (int i = 0; i < num_done; i++) {
++            close(done[i].fd);
++            mp_image_unrefp(&done[i].mpi);
++        }
++        pthread_mutex_lock(&p->lock);
++        p->num_releasing -= num_done;
++    }
++    pthread_mutex_unlock(&p->lock);
++    return NULL;
++}
++
++// Native fence fds and the releaser, where EGL offers them.
++static void check_fence_fds(struct render_backend *ctx, struct priv *p)
++{
++    p->fences_checked = true;
++    EGLDisplay dpy = eglGetCurrentDisplay();
++    const char *exts = dpy != EGL_NO_DISPLAY ? eglQueryString(dpy, EGL_EXTENSIONS) : NULL;
++    if (!exts || !strstr(exts, "EGL_ANDROID_native_fence_sync"))
++        goto fallback;
++    p->CreateSync = (PFNEGLCREATESYNCKHRPROC)eglGetProcAddress("eglCreateSyncKHR");
++    p->DestroySync = (PFNEGLDESTROYSYNCKHRPROC)eglGetProcAddress("eglDestroySyncKHR");
++    p->DupNativeFenceFD =
++        (PFNEGLDUPNATIVEFENCEFDANDROIDPROC)eglGetProcAddress("eglDupNativeFenceFDANDROID");
++    if (!p->CreateSync || !p->DestroySync || !p->DupNativeFenceFD)
++        goto fallback;
++    p->wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
++    if (p->wake_fd < 0)
++        goto fallback;
++    pthread_mutex_init(&p->lock, NULL);
++    pthread_cond_init(&p->freed, NULL);
++    if (pthread_create(&p->releaser, NULL, releaser, p)) {
++        pthread_cond_destroy(&p->freed);
++        pthread_mutex_destroy(&p->lock);
++        close(p->wake_fd);
++        goto fallback;
++    }
++    p->fence_fds = true;
++    MP_VERBOSE(ctx, "Drawn hardware frames are released as their draws finish.\n");
++    return;
++fallback:
++    MP_VERBOSE(ctx, "No native fences: drawn hardware frames are released on later renders.\n");
++}
++
++// A native fence fd signalled once the commands so far are done, or -1.
++static int fence_fd(struct priv *p)
++{
++    EGLDisplay dpy = eglGetCurrentDisplay();
++    EGLSyncKHR sync = p->CreateSync(dpy, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL);
++    if (sync == EGL_NO_SYNC_KHR)
++        return -1;
++    int fd = p->DupNativeFenceFD(dpy, sync);  // creating it flushed
++    p->DestroySync(dpy, sync);
++    return fd;
++}
++
++// Without native fences: lets go of the held frames the GPU is done with,
++// or of all after draining GL. A failed drain keeps their references alive.
++static void release_held(struct priv *p, bool all)
++{
++    GL *gl = held_gl(p);
++    if (all && p->num_held && !finish_draws(p))
++        return;
++    int n = 0;
++    for (; n < p->num_held; n++) {
++        struct held_frame *h = &p->held[n];
++        if (!all) {
++            if (!gl || !h->fence)
++                break;
++            GLenum r = gl->ClientWaitSync(h->fence, 0, 0);
++            if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED)
++                break;
++        }
++        if (gl && h->fence)
++            gl->DeleteSync(h->fence);
++        mp_image_unrefp(&h->mpi);
++    }
++    memmove(p->held, p->held + n, (p->num_held - n) * sizeof(p->held[0]));
++    p->num_held -= n;
++}
++
++static void stop_releaser(struct priv *p)
++{
++    pthread_mutex_lock(&p->lock);
++    p->quit = true;
++    pthread_mutex_unlock(&p->lock);
++    uint64_t one = 1;
++    if (write(p->wake_fd, &one, sizeof(one)) < 0) {
++        // the thread polls its eventfd: it cannot be full
++    }
++    pthread_join(p->releaser, NULL);
++    for (int i = 0; i < p->num_held; i++) {
++        if (!wait_fd(p->held[i].fd) && !finish_draws(p))
++            continue;
++        close(p->held[i].fd);
++        mp_image_unrefp(&p->held[i].mpi);
++    }
++    p->num_held = 0;
++    pthread_cond_destroy(&p->freed);
++    pthread_mutex_destroy(&p->lock);
++    close(p->wake_fd);
++}
++
++// mpv lets go of a frame once it draws the next one, and a V4L2 decoder
++// writes a new picture into the frame's buffer at once, without waiting for
++// the GPU's reads. With the GPU behind (the app's eye passes queued ahead of
++// this draw) parts of a later picture were drawn, now and then a torn frame.
++// So a drawn hardware frame stays referenced until a fence after its draw.
++static void hold_drawn(struct render_backend *ctx, struct vo_frame *frame)
++{
++    struct priv *p = ctx->priv;
++    struct mp_image *mpi = frame->current;
++    GL *gl = held_gl(p);
++    if (!mpi || mpi->imgfmt != IMGFMT_DRMPRIME || !gl || !gl->FenceSync)
++        return;
++    if (!p->fences_checked)
++        check_fence_fds(ctx, p);
++    if (p->fence_fds) {
++        int fd = fence_fd(p);
++        struct mp_image *ref = fd >= 0 ? mp_image_new_ref(mpi) : NULL;
++        if (!ref) {
++            // Not held, so wait for the draw rather than risk a torn frame.
++            if (fd >= 0)
++                close(fd);
++            gl->Finish();
++            return;
++        }
++        pthread_mutex_lock(&p->lock);
++        struct timespec until;
++        clock_gettime(CLOCK_REALTIME, &until);
++        until.tv_sec += 1;
++        while (p->num_held == MP_ARRAY_SIZE(p->held) &&
++               pthread_cond_timedwait(&p->freed, &p->lock, &until) == 0) {}
++        bool full = p->num_held == MP_ARRAY_SIZE(p->held);
++        if (!full)
++            p->held[p->num_held++] = (struct held_frame){.mpi = ref, .fd = fd};
++        pthread_mutex_unlock(&p->lock);
++        if (full) {
++            if (!wait_fd(fd) && !finish_draws(p))
++                return;  // keep ref and fd alive rather than recycle an unfinished draw
++            close(fd);
++            mp_image_unrefp(&ref);
++            return;
++        }
++        uint64_t one = 1;
++        if (write(p->wake_fd, &one, sizeof(one)) < 0) {
++            // the thread polls its eventfd: it cannot be full
++        }
++        return;
++    }
++    struct held_frame *last = p->num_held ? &p->held[p->num_held - 1] : NULL;
++    if (last && last->mpi->planes[0] == mpi->planes[0]) {
++        // drawn again: until the newer draw is done
++        if (last->fence)
++            gl->DeleteSync(last->fence);
++        last->fence = gl->FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
++        return;
++    }
++    if (p->num_held == MP_ARRAY_SIZE(p->held)) {
++        struct held_frame *h = &p->held[0];
++        GLenum r = h->fence ? gl->ClientWaitSync(h->fence, GL_SYNC_FLUSH_COMMANDS_BIT,
++                                                1000000000) : GL_WAIT_FAILED;
++        if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED && !finish_draws(p)) {
++            // The current draw also needs a reference if GL could not drain.
++            mp_image_new_ref(mpi);
++            return;
++        }
++        if (h->fence)
++            gl->DeleteSync(h->fence);
++        mp_image_unrefp(&h->mpi);
++        memmove(p->held, p->held + 1, (p->num_held - 1) * sizeof(p->held[0]));
++        p->num_held--;
++    }
++    struct mp_image *ref = mp_image_new_ref(mpi);
++    if (!ref) {
++        gl->Finish();
++        return;
++    }
++    p->held[p->num_held++] = (struct held_frame){
++        .mpi = ref,
++        .fence = gl->FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0),
++    };
++}
++#endif
++
++#if HAVE_DMABUF_INTEROP_GL
++static struct video_export *export_param(mpv_render_param *params)
++{
++    struct video_export *e = get_mpv_render_param(params, VIDEO_EXPORT_PARAM, NULL);
++    return e && e->magic == VIDEO_EXPORT_MAGIC && e->size == sizeof(*e) ? e : NULL;
++}
++
++static void forget_image(struct render_backend *ctx)
++{
++    struct priv *p = ctx->priv;
++    if (p->renderer)
++        gl_video_forget_image(p->renderer);
++}
++
++// The app's releases also come with calls that draw nothing (while a file
++// opens, or with no file), when the old decoder's frames must go.
++static void skip_render(struct render_backend *ctx, mpv_render_param *params)
++{
++    struct video_export *e = export_param(params);
++    if (e) {
++        take_releases(ctx->priv, e);
++        e->exported = 0;
++        if (e->close_pending) {
++            struct priv *p = ctx->priv;
++            bool idle = false;
++            if (!p->fence_fds) {
++                release_held(p, false);
++                idle = p->num_held == 0;
++            } else if (!pthread_mutex_trylock(&p->lock)) {
++                idle = p->num_held == 0 && p->num_releasing == 0;
++                pthread_mutex_unlock(&p->lock);
++            }
++            e->buffers_released = idle && p->num_linear == 0 && frame_ubwc_decoder_idle();
++        }
++    }
++}
++#endif
++
+ static int render(struct render_backend *ctx, mpv_render_param *params,
+                   struct vo_frame *frame)
+ {
+     struct priv *p = ctx->priv;
+ 
++#if HAVE_DMABUF_INTEROP_GL
++    if (!p->fence_fds)
++        release_held(p, false);
++    struct video_export *e = export_param(params);
++    if (e && export_frame(ctx, e, frame))
++        return 0;
++#endif
++
+     // Mapping the surface is cheap, better than adding new backend entrypoints.
+     struct ra_tex *tex;
+     int err = p->context->fns->wrap_fbo(p->context, params, &tex);
+@@ -188,6 +681,9 @@
+ 
+     struct ra_fbo target = {.tex = tex, .flip = flip};
+     gl_video_render_frame(p->renderer, frame, &target, RENDER_FRAME_DEF);
++#if HAVE_DMABUF_INTEROP_GL
++    hold_drawn(ctx, frame);
++#endif
+     p->context->fns->done_frame(p->context, frame->display_synced);
+ 
+     return 0;
+@@ -221,6 +717,17 @@
+ {
+     struct priv *p = ctx->priv;
+ 
++#if HAVE_DMABUF_INTEROP_GL
++    if (p->fence_fds)
++        stop_releaser(p);
++    else
++        release_held(p, true);
++    frame_ubwc_destroy(p->exporter);
++    if (p->watching)
++        frame_ubwc_watch(NULL);
++    while (p->num_linear)
++        release_linear(p, p->linear[0].id);
++#endif
+     if (p->renderer)
+         gl_video_uninit(p->renderer);
+ 
+@@ -243,6 +750,10 @@
+     .resize = resize,
+     .get_target_size = get_target_size,
+     .render = render,
++#if HAVE_DMABUF_INTEROP_GL
++    .skip_render = skip_render,
++    .forget_image = forget_image,
++#endif
+     .get_image = get_image,
+     .screenshot = screenshot,
+     .perfdata = perfdata,
+--- a/video/out/gpu/video.c
++++ b/video/out/gpu/video.c
+@@ -4089,6 +4089,12 @@
+     gl_video_reset_surfaces(p);
+ }
+ 
++// Lets go of the last frame drawn (and its hardware mapping) before the next.
++void gl_video_forget_image(struct gl_video *p)
++{
++    unref_current_image(p);
++}
++
+ bool gl_video_showing_interpolated_frame(struct gl_video *p)
+ {
+     return p->is_interpolated;
+@@ -4170,6 +4176,14 @@
+     });
+     init_gl(p);
+     reinit_from_options(p);
++    // Generate the cached CPU matrix before the XR loop, not on its first draw.
++    if (p->opts.dither_algo == DITHER_FRUIT && p->opts.dither_depth >= 0) {
++        int sizeb = p->opts.dither_size;
++        int size = 1 << sizeb;
++        p->last_dither_matrix = talloc_array(p, float, size * size);
++        mp_make_fruit_dither_matrix(p->last_dither_matrix, sizeb);
++        p->last_dither_matrix_size = size;
++    }
+     return p;
+ }
+ 
+--- a/video/out/libmpv.h
++++ b/video/out/libmpv.h
+@@ -75,6 +75,10 @@
+     // Implementation of mpv_render_context_render().
+     int (*render)(struct render_backend *ctx, mpv_render_param *params,
+                   struct vo_frame *frame);
++    // mpv_render_context_render() with MPV_RENDER_PARAM_SKIP_RENDERING. Optional.
++    void (*skip_render)(struct render_backend *ctx, mpv_render_param *params);
++    // Lets go of the last frame drawn (VOCTRL_FORGET_FRAME). Optional.
++    void (*forget_image)(struct render_backend *ctx);
+     // Free all data in ctx->priv.
+     void (*destroy)(struct render_backend *ctx);
+ };
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -60,6 +60,8 @@
+ enum mp_voctrl {
+     /* signal a device reset seek */
+     VOCTRL_RESET = 1,
++    /* the video chain ended: let go of the frame kept for redraws */
++    VOCTRL_FORGET_FRAME,
+     /* Handle input and redraw events, called by vo_check_events() */
+     VOCTRL_CHECK_EVENTS,
+     /* signal a device pause */
+@@ -542,6 +544,7 @@
+ void vo_redraw(struct vo *vo);
+ bool vo_want_redraw(struct vo *vo);
+ void vo_seek_reset(struct vo *vo);
++void vo_forget_frame(struct vo *vo);
+ void vo_destroy(struct vo *vo);
+ void vo_set_paused(struct vo *vo, bool paused);
+ int64_t vo_get_drop_count(struct vo *vo);
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -1273,10 +1273,35 @@
+     struct vo_internal *in = vo->in;
+     mp_mutex_lock(&in->lock);
+     forget_frames(vo);
++    // A V4L2 decoder is reopened after a seek (vd_lavc): its frame kept for
++    // redraws would keep the old session's buffers, and the new session
++    // might not fit beside them. The app shows its own copy meanwhile.
++    bool hw = in->current_frame && in->current_frame->current &&
++              in->current_frame->current->imgfmt == IMGFMT_DRMPRIME;
++    if (hw) {
++        talloc_free(in->current_frame);
++        in->current_frame = NULL;
++    }
+     reset_vsync_timings(vo);
+     in->send_reset = true;
+     wakeup_locked(vo);
+     mp_mutex_unlock(&in->lock);
++    if (hw)
++        vo_control(vo, VOCTRL_FORGET_FRAME, NULL);
++}
++
++// The video chain ended: the VO and its driver let go of the frame kept for
++// redraws. A hardware decoder's frame keeps the decoder's session (and all
++// its buffers) alive, so the next file's decoder could not have its own.
++void vo_forget_frame(struct vo *vo)
++{
++    struct vo_internal *in = vo->in;
++    mp_mutex_lock(&in->lock);
++    forget_frames(vo);
++    talloc_free(in->current_frame);
++    in->current_frame = NULL;
++    mp_mutex_unlock(&in->lock);
++    vo_control(vo, VOCTRL_FORGET_FRAME, NULL);
+ }
+ 
+ // Whether at least 1 frame was queued or rendered since last seek or reconfig.
+--- a/video/out/vo_libmpv.c
++++ b/video/out/vo_libmpv.c
+@@ -98,6 +98,7 @@
+     bool need_reconfig;
+     bool need_resize;
+     bool need_reset;
++    bool need_forget;
+     bool need_update_external;
+     struct vo *vo;
+ 
+@@ -383,6 +384,10 @@
+     }
+     ctx->need_reset = false;
+ 
++    if (ctx->need_forget && ctx->renderer->fns->forget_image)
++        ctx->renderer->fns->forget_image(ctx->renderer);
++    ctx->need_forget = false;
++
+     struct vo_frame *frame = ctx->next_frame;
+     int64_t wait_present_count = ctx->present_count;
+     if (frame) {
+@@ -410,6 +415,8 @@
+ 
+     if (do_render)
+         err = ctx->renderer->fns->render(ctx->renderer, params, frame);
++    else if (ctx->renderer->fns->skip_render)
++        ctx->renderer->fns->skip_render(ctx->renderer, params);
+ 
+     if (frame != &dummy)
+         talloc_free(frame);
+@@ -610,6 +617,13 @@
+         mp_mutex_unlock(&ctx->lock);
+         vo->want_redraw = true;
+         return VO_TRUE;
++    case VOCTRL_FORGET_FRAME:
++        mp_mutex_lock(&ctx->lock);
++        forget_frames(ctx, true);
++        // The renderer's own reference goes with the next render call.
++        ctx->need_forget = true;
++        mp_mutex_unlock(&ctx->lock);
++        return VO_TRUE;
+     case VOCTRL_PAUSE:
+         vo->want_redraw = true;
+         return VO_TRUE;
+--- a/player/video.c
++++ b/player/video.c
+@@ -159,6 +159,9 @@
+ {
+     if (mpctx->vo_chain) {
+         reset_video_state(mpctx);
++        // Before the decoder closes, so its session can end with it.
++        if (mpctx->video_out)
++            vo_forget_frame(mpctx->video_out);
+         vo_chain_uninit(mpctx->vo_chain);
+         mpctx->vo_chain = NULL;
+ 
+--- a/video/out/gpu/video.h
++++ b/video/out/gpu/video.h
+@@ -217,6 +217,7 @@
+ bool gl_video_gamma_auto_enabled(struct gl_video *p);
+ 
+ void gl_video_reset(struct gl_video *p);
++void gl_video_forget_image(struct gl_video *p);
+ bool gl_video_showing_interpolated_frame(struct gl_video *p);
+ 
+ struct mp_hwdec_devices;

@@ -1,0 +1,74 @@
+# Do not start a software decoder after V4L2 fails on large VR video.
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -630,9 +630,18 @@
+                        ctx->hwdec.codec->name);
+     } else {
++        const AVCodecParameters *par = ctx->codec->lav_codecpar;
++        bool large_v4l2 = false;
++        if (par && (int64_t)par->width * par->height >= 7680LL * 3840) {
++            for (int n = 0; n < ctx->num_attempted_hwdecs; n++) {
++                if (bstr_find0(ctx->attempted_hwdecs[n], "v4l2m2m") >= 0)
++                    large_v4l2 = true;
++            }
++        }
+         // If software fallback is disabled and we get here, all hwdec must
+         // have failed. Tell the ctx to always force an eof.
+-        if (ctx->hwdec_opts->software_fallback == INT_MAX) {
+-            MP_WARN(ctx, "Software decoding fallback is disabled.\n");
++        if (ctx->hwdec_opts->software_fallback == INT_MAX || large_v4l2) {
++            MP_WARN(ctx, "Software decoding fallback is disabled%s.\n",
++                    large_v4l2 ? " for this large V4L2 video" : "");
+             ctx->force_eof = true;
+         } else {
+             MP_VERBOSE(vd, "Using software decoding.\n");
+@@ -715,10 +724,10 @@
+ 
+     bool use_hwdec = ctx->use_hwdec;
+     init_avctx(vd);
+-    if (!ctx->avctx && use_hwdec) {
++    if (!ctx->avctx && use_hwdec && !ctx->force_eof) {
+         do {
+             force_fallback(vd);
+-        } while (!ctx->avctx);
++        } while (!ctx->avctx && !ctx->force_eof);
+     }
+ }
+ 
+@@ -733,6 +742,9 @@
+     m_config_cache_update(ctx->opts_cache);
+ 
+     mp_assert(!ctx->avctx);
++    // Terminal hardware failure must not initialize a software replacement.
++    if (ctx->force_eof)
++        return;
+ 
+     const AVCodec *lavc_codec = NULL;
+ 
+@@ -1244,6 +1256,8 @@
+ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
+ {
+     vd_ffmpeg_ctx *ctx = vd->priv;
++    if (ctx->force_eof)
++        return AVERROR_EOF;
+     if (ctx->reopen_v4l2) {
+         if (!pkt)
+             return AVERROR_EOF;
+@@ -1414,7 +1428,7 @@
+ 
+     int ret = decode_frame(vd);
+ 
+-    if (ctx->hwdec_failed) {
++    if (ctx->hwdec_failed && !ctx->force_eof) {
+         // Failed hardware decoding? Try the next one, and eventually software.
+         struct demux_packet **pkts = ctx->sent_packets;
+         int num_pkts = ctx->num_sent_packets;
+@@ -1433,7 +1447,7 @@
+          */
+         do {
+             force_fallback(vd);
+-        } while (!ctx->avctx);
++        } while (!ctx->avctx && !ctx->force_eof);
+ 
+         ctx->requeue_packets = pkts;
+         ctx->num_requeue_packets = num_pkts;

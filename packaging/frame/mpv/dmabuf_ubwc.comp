@@ -1,0 +1,38 @@
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_samplerless_texture_functions : require
+// Copies one band of a Q10C plane, read through a TP10 texture
+// (dmabuf_ubwc.c), into a P010 plane: two samples or a UV pair a word.
+
+layout(local_size_x = 32, local_size_y = 4) in;
+layout(constant_id = 0) const bool chroma = false;
+layout(set = 0, binding = 0) uniform texture2D tp10;
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Words {
+    uint words[];
+};
+layout(push_constant) uniform Band {
+    Words rows;  // the band's first output row
+    uint pitch;  // words per row
+} band;
+
+uint p010(float v)
+{
+    return uint(roundEven(v * 1023.0)) << 6;
+}
+
+void main()
+{
+    uvec2 id = gl_GlobalInvocationID.xy;
+    uvec2 size = uvec2(textureSize(tp10, 0));
+    if (id.y >= size.y || id.x * (chroma ? 1 : 2) >= size.x)
+        return;
+    uint word;
+    if (chroma) {
+        vec2 uv = texelFetch(tp10, ivec2(id), 0).rg;
+        word = p010(uv.r) | p010(uv.g) << 16;
+    } else {
+        ivec2 at = ivec2(id.x * 2, id.y);
+        word = p010(texelFetch(tp10, at, 0).r) | p010(texelFetch(tp10, at + ivec2(1, 0), 0).r) << 16;
+    }
+    band.rows.words[id.y * band.pitch + id.x] = word;
+}

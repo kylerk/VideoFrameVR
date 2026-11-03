@@ -1,0 +1,487 @@
+#include "menu_style.h"
+
+#include "menu_stash.h"
+#include "menu_stash_covers.h"
+#include "stash.h"
+#include "stash_text.h"
+
+#include <algorithm>
+#include <array>
+
+// The Studios page (docs/stash.md): logo cards of the studios with scenes
+// here, each on its own, sorted by the app's plays; and a studio's page:
+// its logo and your history with it over its own scenes, listed with the
+// Scenes page's rail, chips and results. The cards' numbers are counted
+// once per catalog, library change, format or order, in one walk over the
+// scenes; each layout adds buttons only for the cards shown.
+
+namespace {
+
+constexpr int kColumns = 5;
+constexpr double kCardGap = 16;
+constexpr double kLogoH = 150;  // a card's logo box
+constexpr double kCardH = 8 + kLogoH + 8 + 34 + 30 + 30 + 10;
+// A logo is fitted into this part of its box, as Stash's cards show them.
+constexpr double kLogoFitW = 0.82, kLogoFitH = 0.7;
+// A studio's page: its band of logo and facts under the heading row.
+constexpr double kStudioLogoW = 260, kStudioBandH = 132;
+
+}  // namespace
+
+struct StashStudiosPage {
+  // A studio's scenes in the chosen format and your history with them.
+  struct Stats {
+    int scenes = 0, plays = 0, rated = 0;
+    double ratings = 0;
+    int32_t newest = kStashNoDay;
+    std::string newestDate;
+    double average() const { return rated ? ratings / rated : 0; }
+  };
+  StudioSort sort = StudioSort::Plays;
+  bool descending = true;
+  double scroll = 0;  // the grid's position (rows), while away
+
+  // Remade when the catalog, the library, the format, the order or the
+  // search changes.
+  uint64_t catalog = ~0ull, library = ~0ull, away = ~0ull;
+  StashFormat format = StashFormat::VR;
+  std::string search;
+  bool stale = true;
+  std::vector<Stats> stats;             // per catalog studio
+  std::vector<std::array<int, 3>> any;  // scenes per StashFormat
+  std::array<int, 3> counts{};          // cards per StashFormat
+  std::vector<int> cards;               // the studios listed, in order
+
+  std::optional<StashSavedList> scenes, studio;
+};
+
+namespace {
+
+StashStudiosPage& pageOf(StashMenu& st) {
+  if (!st.studios) {
+    st.studios = std::make_shared<StashStudiosPage>();
+    st.studios->sort = st.settings.studiosSort;
+    st.studios->descending = st.settings.studiosDescending;
+  }
+  return *st.studios;
+}
+
+// The cards' numbers and order, when what they are made from changed.
+// `generation`: the catalog's (Stash::generation()).
+void rebuild(StashMenu& st, StashStudiosPage& p, const StashCatalog& c, uint64_t generation,
+             StashFormat format, const std::string& search) {
+  if (!p.stale && p.catalog == generation && p.library == st.libraryGeneration &&
+      p.away == st.awayGeneration && p.format == format && p.search == search)
+    return;
+  p.stale = false;
+  p.catalog = generation;
+  p.library = st.libraryGeneration;
+  p.away = st.awayGeneration;
+  p.format = format;
+  p.search = search;
+  const size_t n = c.studios().size();
+  p.stats.assign(n, {});
+  p.any.assign(n, {});
+  const bool history = st.history.size() == c.scenes().size();
+  for (size_t i = 0; i < c.scenes().size(); ++i) {
+    const StashScene& s = c.scenes()[i];
+    if (s.studio < 0 || (history && st.history[i].hidden)) continue;
+    bool vr = s.vr;
+    if (history && st.history[i].vr >= 0) vr = st.history[i].vr == 1;
+    const int kind = vr ? static_cast<int>(StashFormat::VR) : static_cast<int>(StashFormat::Flat);
+    ++p.any[s.studio][0];
+    ++p.any[s.studio][kind];
+    if (format != StashFormat::All && static_cast<int>(format) != kind) continue;
+    StashStudiosPage::Stats& t = p.stats[s.studio];
+    ++t.scenes;
+    if (history) {
+      t.plays += st.history[i].plays;
+      if (st.history[i].rating > 0) {
+        ++t.rated;
+        t.ratings += st.history[i].rating;
+      }
+    }
+    if (s.day != kStashNoDay && (t.newest == kStashNoDay || s.day > t.newest)) {
+      t.newest = s.day;
+      t.newestDate = s.date;
+    }
+  }
+  p.counts = {};
+  for (size_t k = 0; k < n; ++k)
+    for (int f = 0; f < 3; ++f) p.counts[f] += p.any[k][f] > 0;
+
+  // The cards: those with scenes in the format (and matching the search),
+  // in the chosen order.
+  const std::string words = stashFold(search);
+  p.cards.clear();
+  for (size_t k = 0; k < n; ++k)
+    if (p.any[k][static_cast<int>(format)] > 0 &&
+        (words.empty() || stashFold(c.studios()[k].name).find(words) != std::string::npos))
+      p.cards.push_back(static_cast<int>(k));
+  std::vector<std::string> keys;
+  if (p.sort == StudioSort::Name) {
+    keys.resize(n);
+    for (const int k : p.cards) keys[k] = stashCollateKey(c.studios()[k].name);
+  }
+  auto value = [&](int k) -> double {
+    const StashStudiosPage::Stats& t = p.stats[k];
+    switch (p.sort) {
+      case StudioSort::Plays:
+        return t.plays;
+      case StudioSort::Scenes:
+        return t.scenes;
+      case StudioSort::Newest:
+        return t.newest;
+      case StudioSort::Rating:
+        return t.average();
+      case StudioSort::Name:
+        break;
+    }
+    return 0;
+  };
+  // Ties (and studios without the value, last either way) by scenes, then name.
+  std::stable_sort(p.cards.begin(), p.cards.end(), [&](int a, int b) {
+    if (p.sort == StudioSort::Name) {
+      if (keys[a] != keys[b]) return p.descending ? keys[b] < keys[a] : keys[a] < keys[b];
+    } else {
+      const bool knownA = p.sort == StudioSort::Newest ? p.stats[a].newest != kStashNoDay
+                          : p.sort == StudioSort::Rating ? p.stats[a].rated > 0
+                                                         : true;
+      const bool knownB = p.sort == StudioSort::Newest ? p.stats[b].newest != kStashNoDay
+                          : p.sort == StudioSort::Rating ? p.stats[b].rated > 0
+                                                         : true;
+      if (knownA != knownB) return knownA;
+      const double va = value(a), vb = value(b);
+      if (va != vb) return p.descending ? va > vb : va < vb;
+    }
+    if (p.stats[a].scenes != p.stats[b].scenes) return p.stats[a].scenes > p.stats[b].scenes;
+    return c.studios()[a].name < c.studios()[b].name;
+  });
+}
+
+}  // namespace
+
+StashFormat StashPages::shownFormat(const Menu& m) { return m.stashMenu_->list.format; }
+
+MenuCommand StashPages::setFormat(Menu& m, StashFormat format) {
+  StashMenu& st = state(m);
+  st.list.format = format;
+  st.stale = true;
+  m.scrollOffset_ = 0;
+  m.scrollFraction_ = 0;
+  MenuCommand c;
+  c.type = MenuCommand::SetStashFormat;
+  c.value = static_cast<int>(format);
+  return c;
+}
+
+int64_t StashPages::fixedStudio(const Menu& m) {
+  return m.page_ == Menu::Page::StashStudio && m.stashMenu_ ? m.stashMenu_->studio : 0;
+}
+
+double StashPages::bandHeight(const Menu& m) {
+  return m.page_ == Menu::Page::StashStudio ? kStudioBandH + 16 : 0;
+}
+
+StashList StashPages::scopedList(const Menu& m) {
+  StashList list = m.stashMenu_->list;
+  const int64_t fixed = fixedStudio(m);
+  if (fixed) {
+    list.studios = {fixed};
+    list.studiosOut.clear();
+  }
+  return list;
+}
+
+void StashPages::staleStudios(Menu& m) {
+  if (state(m).studios) state(m).studios->stale = true;
+}
+
+void StashPages::showStudios(Menu& m) {
+  const double scroll = pageOf(state(m)).scroll;
+  m.showPage(Menu::Page::StashStudios);
+  m.scrollOffset_ = static_cast<int>(std::floor(scroll));
+  m.scrollFraction_ = scroll - m.scrollOffset_;
+}
+
+void StashPages::leaveStudios(Menu& m) {
+  pageOf(state(m)).scroll = m.scrollOffset_ + m.scrollFraction_;
+}
+
+void StashPages::showStudio(Menu& m, int64_t id) {
+  StashMenu& st = state(m);
+  if (m.page_ == Menu::Page::StashStudio && st.studio == id) return;
+  m.showPage(Menu::Page::StashStudio);  // leaves the page before
+  st.studio = id;
+  enterStudio(m);
+}
+
+// Its scenes in the Scenes page's list: as they were left, if it was the
+// last studio shown; else all of them, newest first, in the format chosen.
+void StashPages::enterStudio(Menu& m) {
+  StashMenu& st = state(m);
+  StashStudiosPage& p = pageOf(st);
+  if (!p.scenes) enterList(m, p.scenes, p.studio, st.studio);
+}
+
+// Its list kept for coming back (after playing one of its scenes, say),
+// the Scenes page's put back.
+void StashPages::leaveStudio(Menu& m) {
+  StashMenu& st = state(m);
+  StashStudiosPage& p = pageOf(st);
+  leaveList(m, p.scenes, p.studio, st.studio);
+}
+
+// On the texture's pixels, with its soft shadow; while it comes, nothing
+// (a studio's page draws its band again once it is there).
+void StashPages::drawLogo(const Menu& m, cairo_t* cr, const StashStudio& studio, double x,
+                          double y, double w, double h, double alpha) {
+  constexpr float scale = menu_geometry::kRasterScale;
+  int pad = 0;
+  bool none = false;
+  cairo_surface_t* logo =
+      m.stashCovers_->studioLogo(studio, stashPixels(w), stashPixels(h), pad, none, y - 8, y + h + 8);
+  if (logo) {
+    const double lw = (cairo_image_surface_get_width(logo) - 2 * pad) / scale;
+    const double lh = (cairo_image_surface_get_height(logo) - 2 * pad) / scale;
+    cairo_save(cr);
+    cairo_translate(cr, onPixel(x + (w - lw) / 2 - pad / scale),
+                    onPixel(y + (h - lh) / 2 - pad / scale));
+    cairo_scale(cr, 1 / scale, 1 / scale);
+    cairo_set_source_surface(cr, logo, 0, 0);
+    cairo_paint_with_alpha(cr, alpha);
+    cairo_restore(cr);
+    return;
+  }
+  if (!none) {
+    if (m.page_ == Menu::Page::StashStudio) m.stashMenu_->bandPending = true;
+    return;
+  }
+  const Palette& pal = m.palette();
+  const double rgba[4] = {pal.textDim.r, pal.textDim.g, pal.textDim.b, pal.textDim.a};
+  m.drawTextLines(cr, studio.name, x, y + h / 2 - 34, w, 28, 2, rgba, true, y + h);
+}
+
+void StashPages::drawStudioCard(const Menu& m, cairo_t* cr, const Button& b, const double ink[4]) {
+  const StashCatalog* c = catalog(m);
+  const int index = c ? c->studioById(b.stashId) : -1;
+  const double bx = b.x + 8, by = b.y + 8, bw = b.w - 16;
+  roundedRect(cr, bx, by, bw, kLogoH, 12);
+  cairo_set_source_rgba(cr, 1, 1, 1, 0.05);
+  cairo_fill(cr);
+  if (index >= 0)
+    drawLogo(m, cr, c->studios()[index], bx + bw * (1 - kLogoFitW) / 2,
+             by + kLogoH * (1 - kLogoFitH) / 2, bw * kLogoFitW, kLogoH * kLogoFitH, 1);
+  const Palette& pal = m.palette();
+  const double dim[4] = {pal.textDim.r, pal.textDim.g, pal.textDim.b, pal.textDim.a};
+  const double light[4] = {0.88, 0.88, 0.9, 1};
+  const double textX = b.x + 14, textW = b.w - 28, ty = by + kLogoH;
+  m.drawTextLines(cr, b.label, textX, ty + 4, textW, 26, 1, ink, false);
+  m.drawTextLines(cr, b.detail, textX, ty + 40, textW, 22, 1, light, false);
+  m.drawTextLines(cr, b.date, textX, ty + 70, textW, 22, 1, dim, false);
+}
+
+// The Studios page: the heading row (its title and count), the tool row
+// (All / VR / 2D, the order, the search, to the top / end), then the cards.
+void StashPages::layoutStudios(Menu& m) {
+  StashMenu& st = state(m);
+  StashStudiosPage& p = pageOf(st);
+  const StashStrings& t = strings().stash;
+  takeChanges(m);  // a new catalog, the library's history
+  const StashCatalog* c = catalog(m);
+  if (c) rebuild(st, p, *c, m.stash_->generation(), shownFormat(m), st.studioSearch);
+
+  const double x0 = Menu::kPageX + kPagePad, right = Menu::kPageX + Menu::kPageWidth - kPagePad;
+  const StashFormat shown = shownFormat(m);
+  const bool editing = m.editing_ && st.typing == StashMenu::Typing::Studios;
+
+  // The cards, five a row.
+  const double bottomY = editing ? kKeyboardY - 16 : kListBottom;
+  m.listLeft_ = x0;
+  m.listRight_ = right + 6;
+  m.listShowsFolder_ = false;
+  m.listColumns_ = false;
+  m.listTop_ = kGridTop;
+  m.listBottom_ = bottomY;
+  if (c) {
+    const double cardW = (m.listRight_ - 30 - x0 - (kColumns - 1) * kCardGap) / kColumns;
+    const double rowH = kCardH + kCardGap;
+    const int count = static_cast<int>(p.cards.size());
+    m.rowHeight_ = rowH;
+    m.visibleRows_ = std::max(1, static_cast<int>((bottomY - kGridTop) / rowH));
+    m.listCount_ = (count + kColumns - 1) / kColumns;
+    int firstRow, endRow;
+    m.clampScroll(m.listCount_, m.visibleRows_, firstRow, endRow);
+    const int first = firstRow * kColumns, last = std::min(count, endRow * kColumns);
+    for (int i = first; i < last; ++i) {
+      const int k = p.cards[i], cell = i - first;
+      const StashStudio& studio = c->studios()[k];
+      const StashStudiosPage::Stats& s = p.stats[k];
+      Button b;
+      b.panel = Menu::kBrowser;
+      b.x = x0 + (cell % kColumns) * (cardW + kCardGap);
+      b.y = kGridTop + (cell / kColumns - m.scrollFraction_) * rowH;
+      b.w = cardW;
+      b.h = kCardH;
+      b.label = studio.name;
+      b.detail = stashJoined(
+          {stashPrinted(t.count, stashNumber(s.scenes)), stashPlays(s.plays)});
+      b.date = stashJoined({s.newestDate.empty() ? "" : stashPrinted(t.newest, s.newestDate),
+                            s.rated ? stashPrinted(t.stars, s.average()) : ""});
+      b.scrolls = true;
+      b.stashLook = static_cast<int>(StashLook::Studio);
+      b.stashId = studio.id;
+      b.action = [&m, id = studio.id] {
+        showStudio(m, id);
+        return MenuCommand{};
+      };
+      if (m.textWidth(b.label, 26, false) > b.w - 28) b.tooltip = b.label;
+      m.buttons_.push_back(b);
+    }
+    // Their logos, then those of the rows around them.
+    const int logoW = stashPixels((cardW - 16) * kLogoFitW);
+    std::vector<StashImages::Request> requests;
+    const int page = m.visibleRows_ * kColumns;
+    auto add = [&](int from, int to) {
+      for (int i = std::max(0, from); i < std::min(count, to); ++i)
+        if (!c->studios()[p.cards[i]].image.empty())
+          requests.push_back(Stash::logoRequest(c->studios()[p.cards[i]], logoW));
+    };
+    add(first, last);
+    add(last, last + 2 * page);
+    add(first - page, first);
+    m.stash_->images().want(requests);
+    m.addScrollbar();
+  }
+  if (editing) m.layoutKeyboard();
+
+  // The tool row last: its sort fields open over the cards.
+  const double y = kBrowserToolsY, h = kBrowserToolsH;
+  double x = x0;
+  auto choice = [&](const std::string& label, bool chosen, bool disabled,
+                    std::function<MenuCommand()> action) {
+    Button b = m.textButton(label, Menu::Icon::None, std::move(action), chosen);
+    b.disabled = disabled;
+    b.panel = Menu::kBrowser;
+    b.x = x;
+    b.y = y;
+    b.h = h;
+    b.w = m.textWidth(label, Menu::kTextSize, false) + 36;
+    b.radius = h / 2;
+    m.buttons_.push_back(b);
+    x += b.w + 6;
+  };
+  for (int f = 0; f < 3; ++f) {
+    std::string label = t.formats[f];
+    if (c) label += "  " + stashNumber(p.counts[f]);
+    choice(label, static_cast<int>(shown) == f,
+           c && p.counts[f] == 0 && static_cast<int>(shown) != f,
+           [&m, f] { return setFormat(m, static_cast<StashFormat>(f)); });
+  }
+  x += 16;
+  x = layoutSort(
+      m, x, t.studioSorts, 5, static_cast<int>(p.sort), p.descending,
+      [&m](int f) {
+        StashStudiosPage& page = pageOf(state(m));
+        const StudioSort sort = static_cast<StudioSort>(f);
+        // A–Z for names, else the most (newest, best …) first.
+        if (page.sort != sort) page.descending = sort != StudioSort::Name;
+        page.sort = sort;
+        page.stale = true;
+        return MenuCommand{MenuCommand::SetStashStudiosSort, double(page.descending),
+                           stashSortName(page.sort)};
+      },
+      [&m] {
+        StashStudiosPage& page = pageOf(state(m));
+        page.descending = !page.descending;
+        page.stale = true;
+        return MenuCommand{MenuCommand::SetStashStudiosSort, double(page.descending),
+                           stashSortName(page.sort)};
+      });
+  layoutSearch(m, x, layoutJumps(m), st.studioSearch, t.find[2], StashMenu::Typing::Studios);
+}
+
+void StashPages::drawStudiosHeading(const Menu& m, cairo_t* cr) {
+  const StashMenu& st = *m.stashMenu_;
+  const StashStrings& t = strings().stash;
+  const Palette& pal = m.palette();
+  const double x = Menu::kPageX + kPagePad;
+  const double titleW = m.textWidth(t.studios, 30, true) + 4;
+  m.drawText(cr, t.studios, x, kBrowserRowY, titleW, kBrowserRowH, 30, true, false, pal.text.r,
+             pal.text.g, pal.text.b);
+  const StashCatalog* c = catalog(m);
+  if (!c) {
+    drawWaiting(m, cr, x + 24, kGridTop + 20, Menu::kPageWidth - 2 * kPagePad - 48);
+  } else if (st.studios) {
+    const StashStudiosPage& p = *st.studios;
+    const long n = static_cast<long>(p.cards.size());
+    m.drawText(cr, stashPrinted(t.studiosCount, stashNumber(n)),
+               x + titleW + 20, kBrowserRowY, 600, kBrowserRowH, 24, false, false, pal.textDim.r,
+               pal.textDim.g, pal.textDim.b, pal.textDim.a);
+    if (p.cards.empty()) {
+      const std::string none =
+          st.studioSearch.empty() ? t.noStudios : stashPrinted(t.noMatches, st.studioSearch);
+      m.drawText(cr, none, x + 24, kGridTop + 20, Menu::kPageWidth - 2 * kPagePad - 48, kFileRowH,
+                 27, false, false, pal.textDim.r, pal.textDim.g, pal.textDim.b, pal.textDim.a);
+    }
+  }
+}
+
+// A studio's page: Back to the studios and the Scenes heading row; its band
+// (logo, your history with it, the studio it is under); then its scenes as
+// the Scenes page shows them.
+void StashPages::layoutStudio(Menu& m) {
+  StashMenu& st = state(m);
+  const StashStrings& t = strings().stash;
+  enterStudio(m);
+  refresh(m);
+  const StashCatalog* c = catalog(m);
+  StashStudiosPage& p = pageOf(st);
+  if (c) rebuild(st, p, *c, m.stash_->generation(), st.list.format, st.studioSearch);
+  const double x0 = Menu::kPageX + kPagePad, right = Menu::kPageX + Menu::kPageWidth - kPagePad;
+  Button back = actionButton(
+      m, t.studios, StashIcon::Back,
+      [&m] {
+        showStudios(m);
+        return MenuCommand{};
+      },
+      x0, kBrowserRowY, kBrowserRowH);
+  m.buttons_.push_back(back);
+
+  const int index = c ? c->studioById(st.studio) : -1;
+  std::vector<StashImages::Request> logo;
+  if (index >= 0) {
+    const StashStudio& studio = c->studios()[index];
+    const StashStudiosPage::Stats& s = p.stats[index];
+    if (!studio.image.empty())
+      logo.push_back(Stash::logoRequest(studio, stashPixels(kStudioLogoW * kLogoFitW)));
+    const double y = kBrowserToolsY, tx = x0 + kStudioLogoW + 28;
+    // Your history with it, and the studio Stash has it under, as text.
+    const std::string facts =
+        stashJoined({stashPrinted(t.count, stashNumber(s.scenes)),
+                     s.newestDate.empty() ? "" : stashPrinted(t.newestIn, s.newestDate),
+                     stashPlays(s.plays), s.rated ? stashPrinted(t.average, s.average()) : ""});
+    m.addLabel(tx, y, right - tx, 40, facts, 24, false);
+    if (studio.parent >= 0)
+      m.addLabel(tx, y + 40, right - tx, 36,
+                 stashPrinted(t.partOf, c->studios()[studio.parent].name), 24, true);
+  }
+  // Its scenes as the Scenes page shows them, under the band.
+  m.stashCovers_->wantFirst(std::move(logo));
+  layoutResults(m, kGridTop + bandHeight(m), right);
+  layoutHeader(m, back.x + back.w + kGap);
+  layoutTools(m);
+}
+
+void StashPages::drawStudioHeading(const Menu& m, cairo_t* cr) {
+  drawScenesHeading(m, cr);
+  const StashCatalog* c = catalog(m);
+  const int index = c ? c->studioById(m.stashMenu_->studio) : -1;
+  if (index < 0) return;
+  const double x = Menu::kPageX + kPagePad, y = kBrowserToolsY;
+  roundedRect(cr, x, y, kStudioLogoW, kStudioBandH, 12);
+  cairo_set_source_rgba(cr, 1, 1, 1, 0.05);
+  cairo_fill(cr);
+  drawLogo(m, cr, c->studios()[index], x + kStudioLogoW * (1 - kLogoFitW) / 2,
+           y + kStudioBandH * (1 - kLogoFitH) / 2, kStudioLogoW * kLogoFitW, kStudioBandH * kLogoFitH, 1);
+}

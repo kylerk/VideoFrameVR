@@ -1,0 +1,47 @@
+name: Bug report
+description: Something doesn't work or looks wrong
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Settings → Help shows it, for example v0.1.0.
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device
+      options:
+        - Steam Frame
+        - Desktop PC with SteamVR
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >
+        In the app, open Settings → Help → Save diagnostics. It saves a zip to your
+        Downloads folder with the app's logs and settings, with paths, addresses and
+        keys removed. Drag that zip here. If the app doesn't start, run
+        `~/Applications/VideoFrameVR/videoframevr.sh --save-diagnostics` instead.
+    validations:
+      required: true
+  - type: input
+    id: ai
+    attributes:
+      label: AI use
+      description: >
+        Write "None" if you wrote this yourself. If AI wrote or rewrote any
+        of it, name the model and the harness, for example "Claude Opus 5.5 in
+        OpenCode". Reports that hide AI use are closed.
+    validations:
+      required: true

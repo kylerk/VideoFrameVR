@@ -1,0 +1,5 @@
+// Made by CMake from src/library_schema.sql, the one copy of the library's
+// schema.
+#pragma once
+
+static const char kLibrarySchema[] = R"sql(@LIBRARY_SCHEMA@)sql";
