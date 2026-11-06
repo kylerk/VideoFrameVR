@@ -365,15 +365,15 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
   // A Q10C frame: its TP10 descriptors, for the pipelines for them (no
   // sharpening: VideoPlayer::setSharpened has mpv convert frames then).
   const bool tp10 = yuv && yuv->tp10() && direct_;
-  auto bind = [&](bool screen, bool maskFirst, bool keyed) {
+  auto bind = [&](bool screen, bool maskFirst, bool keyed, bool graded) {
     if (tp10) {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        pipelines_.tp10(screen, maskFirst, keyed, plainEye_));
+                        pipelines_.tp10(screen, maskFirst, keyed, graded, plainEye_));
       direct_->bindTp10(cmd, pipelines_.tp10Layout(), *yuv);
       return;
     }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline(Pipelines::videoPipeline(screen, maskFirst, keyed, sharpen > 0.0f)));
+                      pipeline(Pipelines::videoPipeline(screen, maskFirst, keyed, sharpen > 0.0f, graded)));
     pipelines_.bindTextures(cmd, v.texture, sampler, chroma);
   };
 
@@ -401,7 +401,7 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
         p.yuv[i] = yuv->color().range[i];
         p.yuvMatrix[i] = yuv->color().matrix[i];
       }
-    bind(true, false, false);
+    bind(true, false, false, false);
     pushEye(cmd, eye);
     pushDraw(cmd, p);
     vkCmdDraw(cmd, 2 * 65, 1, 0, 0);
@@ -468,7 +468,17 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
     p.alpha[3] = c.matrix[3];
   }
   const bool maskFirst = (flags & kPackedAlpha) && (flags & (kKeyGreen | kAlphaOut));
-  bind(false, maskFirst, (flags & kChromaKey) != 0);
+  const bool keyed = (flags & kChromaKey) != 0;
+  // The room's grade (surround.frag, roomGains()): the pipelines for it only
+  // while there is one, so that nothing else pays for it.
+  const bool graded = (maskFirst || keyed) && (v.grade[0] != 1.0f || v.grade[1] != 1.0f || v.grade[2] != 1.0f);
+  if (graded && keyed) {
+    for (int c = 0; c < 3; ++c)  // a byte each, 170 being exactly 1
+      p.mode[3] |= static_cast<uint32_t>(std::clamp(v.grade[c] * 170.0f + 0.5f, 0.0f, 255.0f)) << (8 + 8 * c);
+  } else if (graded) {
+    for (int c = 0; c < 3; ++c) p.chroma[1 + c] = v.grade[c];
+  }
+  bind(false, maskFirst, keyed, graded);
   pushEye(cmd, eye);
   pushDraw(cmd, p);
   vkCmdDraw(cmd, 3, 1, 0, 0);

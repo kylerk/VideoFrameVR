@@ -156,6 +156,8 @@ void Menu::update(const MenuView& view) {
       view.background != view_.background || view.autoPassthrough != view_.autoPassthrough ||
       view.passthrough != view_.passthrough || view.packedAlpha != view_.packedAlpha ||
       view.maskFormat != view_.maskFormat ||
+      view.roomMatch != view_.roomMatch || view.roomBusy != view_.roomBusy ||
+      view.roomStatus != view_.roomStatus ||
       view.greenScreen.on != view_.greenScreen.on ||
       view.resume != view_.resume ||
       view.seekPreview != view_.seekPreview || view.thumbnails != view_.thumbnails ||
@@ -175,6 +177,14 @@ void Menu::update(const MenuView& view) {
   if (view.zoom != view_.zoom) sliderChanged(MenuCommand::SetZoom);
   if (view.originForward != view_.originForward) sliderChanged(MenuCommand::SetOriginForward);
   if (view.sharpen != view_.sharpen) sliderChanged(MenuCommand::SetSharpen);
+  if (view.roomTuning.tint != view_.roomTuning.tint) sliderChanged(MenuCommand::SetRoomTint);
+  if (view.roomTuning.brightness != view_.roomTuning.brightness) sliderChanged(MenuCommand::SetRoomBrightness);
+  if (view.roomTuning.darkest != view_.roomTuning.darkest) sliderChanged(MenuCommand::SetRoomDarkest);
+  if (view.roomTuning.red != view_.roomTuning.red) sliderChanged(MenuCommand::SetRoomRed);
+  if (view.roomTuning.green != view_.roomTuning.green) sliderChanged(MenuCommand::SetRoomGreen);
+  // The readout of the shader's gains is the row below blue.
+  if (view.roomTuning.blue != view_.roomTuning.blue || view.roomGains != view_.roomGains)
+    sliderChanged(MenuCommand::SetRoomBlue, kSettingStep);
   if (view.screen.distanceCm != view_.screen.distanceCm) sliderChanged(MenuCommand::SetScreenDistance);
   if (view.screen.heightCm != view_.screen.heightCm) sliderChanged(MenuCommand::SetScreenHeight);
   if (view.screen.curvePercent != view_.screen.curvePercent) sliderChanged(MenuCommand::SetScreenCurve);

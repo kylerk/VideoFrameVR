@@ -670,6 +670,70 @@ void Menu::layoutVideoSettings() {
                     kHintSize, true, 2);
   y += own ? hintHeight(2) + 6 : kSettingStep;
   addGroup(columnX(1), top, kColumnW, y + 10 - top, t.passthroughGroup);
+
+  // Matching the room's light (room_capture.h): where the headset view shows
+  // the room behind a video that cuts itself out. Flat video has no such cut.
+  if (!kStandaloneHeadset || !view_.opacityApplies || flat) return;
+  const RoomMatchStrings& room = t.roomMatch;
+  const double roomTop = y + 10 + kGap;
+  y = firstRow(roomTop);
+  addToggleRow(x, y, w, room.enabled, view_.roomMatch, command(MenuCommand::ToggleRoomMatch))
+      .tooltip = room.enabledTip;
+  y += kSettingStep;
+  addLabel(x + 12, y, w - 12, 0, room.hint, kHintSize, true, 3);
+  y += hintHeight(3) + 6;
+  const bool roomOff = !view_.roomMatch;
+  const double half = (w - 8) / 2;
+  auto roomButton = [&](int slot, const char* label, const char* tip, std::function<MenuCommand()> action,
+                        bool disabled) {
+    Button b = textButton(label, Icon::None, std::move(action));
+    b.panel = kBrowser;
+    b.x = x + (slot % 2) * (half + 8);
+    b.y = y + (slot / 2) * kSettingStep;
+    b.w = half;
+    b.h = kSettingRowH;
+    b.fontSize = kHintSize;
+    b.tooltip = tip;
+    b.disabled = disabled;
+    buttons_.push_back(b);
+  };
+  roomButton(0, room.capture, room.captureTip, command(MenuCommand::RoomCapture), roomOff || view_.roomBusy);
+  roomButton(1, room.forget, room.forgetTip, command(MenuCommand::RoomForget), view_.roomBusy);
+  y += kSettingStep;
+  addLabel(x + 12, y, w - 12, 0, view_.roomStatus, kHintSize, true, 2);
+  y += hintHeight(2) + 6;
+  // How the reading becomes the grade: takes effect at once, without a new one.
+  const RoomTuning& tune = view_.roomTuning;
+  const std::string darkest = fixed2(tune.darkest / 100.0) + " " + room.stops;
+  struct RoomStep {
+    const char* label;
+    const char* tip;
+    std::string value;
+    int now, lo, hi, step;
+    MenuCommand::Type type;
+  };
+  const RoomStep roomSteps[] = {
+      {room.tintStrength, room.tintStrengthTip, std::to_string(tune.tint) + " %", tune.tint, 0, 100, 5,
+       MenuCommand::SetRoomTint},
+      {room.brightnessStrength, room.brightnessStrengthTip, std::to_string(tune.brightness) + " %",
+       tune.brightness, 0, 100, 5, MenuCommand::SetRoomBrightness},
+      {room.darkest, room.darkestTip, darkest, tune.darkest, 0, 400, 25, MenuCommand::SetRoomDarkest},
+      {room.red, room.trimTip, std::to_string(tune.red) + " %", tune.red, 0, 150, 5, MenuCommand::SetRoomRed},
+      {room.green, room.trimTip, std::to_string(tune.green) + " %", tune.green, 0, 150, 5,
+       MenuCommand::SetRoomGreen},
+      {room.blue, room.trimTip, std::to_string(tune.blue) + " %", tune.blue, 0, 150, 5,
+       MenuCommand::SetRoomBlue}};
+  for (const RoomStep& s : roomSteps) {
+    addValueRow(x, y, w, 230, s.label, s.value, s.now, s.lo, s.hi,
+                command(s.type, std::max(s.lo, s.now - s.step)),
+                command(s.type, std::min(s.hi, s.now + s.step)), roomOff, false, s.tip);
+    y += kSettingStep;
+  }
+  addLabel(x + 12, y, w - 12, kSettingRowH, view_.roomGains, kHintSize, true);
+  y += kSettingStep;
+  roomButton(0, room.defaults, room.defaultsTip, command(MenuCommand::RoomDefaults), roomOff);
+  y += kSettingStep;
+  addGroup(columnX(1), roomTop, kColumnW, y + 10 - roomTop, room.group);
 }
 
 void Menu::layoutScreenGroup(double top, bool disabled) {

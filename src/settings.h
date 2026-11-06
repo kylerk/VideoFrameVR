@@ -5,6 +5,7 @@
 #include "flat_screen.h"
 #include "focus_settings.h"
 #include "foveation.h"
+#include "room_light.h"
 #include "stash_settings.h"
 
 #include <filesystem>
@@ -49,6 +50,8 @@ struct Settings {
   AntiShimmer antiShimmer = AntiShimmer::Off;  // ... over each pixel's footprint (anti_shimmer.h); off: the owner saw no gain
   int sharpen = 0;                // video sharpening strength in percent (100 = 1.0), 0 = off
   bool toneLook = false;          // video tone curve: brighter, a little more contrast, vignette
+  bool roomMatch = true;          // passthrough video takes the light of the room, once read
+  RoomTuning roomTuning;          // ... how that light becomes its grade
   // Eye images (video and menus), percent of what 1× is (eye_resolution.h),
   // applied while running; 0 = not settled yet (settleEyeResolution).
   int videoResolution = 0;

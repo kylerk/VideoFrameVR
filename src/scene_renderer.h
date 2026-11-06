@@ -54,6 +54,7 @@ struct VideoDraw {
   AntiShimmer antiShimmer = AntiShimmer::Off;  // ... sampled over each pixel's footprint
   bool look = false;            // tone curve and vignette
   float sharpen = 0;            // sharpening strength (Settings::sharpen / 100), 0 = off
+  float grade[3] = {1, 1, 1};   // a masked or keyed surround: linear gains for the room's light
   SeeThrough seeThrough;        // with passthrough on: the packed mask or a keyed green screen
   GreenScreen key;              // ... its softness, spill and shrink
   StereoCorrection correction;
@@ -151,7 +152,9 @@ struct SurroundPush {
   // a packed mask (which has no key), alpha[0] with a key (which has no mask).
   float chroma[4];
   float alpha[4];    // xy: the packed mask's size; kYuv: zw the chroma lookup's offset
-  uint32_t mode[4];  // x projection, y flags, z footprint taps (antiShimmerTaps), w opacity percent
+  // x projection, y flags, z footprint taps (antiShimmerTaps), w opacity percent,
+  // and on a keyed draw with a grade a byte each above it for its gains
+  uint32_t mode[4];
   float yuv[4];      // kYuv: YuvColor::range
 };
 static_assert(sizeof(SurroundPush) == 144 && offsetof(SurroundPush, mode) == 112,

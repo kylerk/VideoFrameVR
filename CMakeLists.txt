@@ -110,6 +110,8 @@ add_executable(videoframevr
   src/remote_avio.cpp
   src/remote_connection.cpp
   src/removable_drives.cpp
+  src/room_capture.cpp
+  src/room_light.cpp
   src/run_log.cpp
   src/scene_renderer.cpp
   src/screen_control.cpp
@@ -215,9 +217,15 @@ endforeach()
 # screen, with sharpening, and for Q10C decoder frames (Pipelines, DirectDepth, DirectVideo's stills).
 foreach(variant
     surround_mask:surround.frag:MASK_FIRST
+    surround_mask_grade:surround.frag:MASK_FIRST+GRADE
+    surround_mask_sharpen_grade:surround.frag:MASK_FIRST+SHARPEN+GRADE
+    surround_mask_tp10_grade:surround.frag:MASK_FIRST+TP10+GRADE
     surround_key:surround.frag:KEY
+    surround_key_grade:surround.frag:KEY+GRADE
     surround_key_sharpen:surround.frag:KEY+SHARPEN
+    surround_key_sharpen_grade:surround.frag:KEY+SHARPEN+GRADE
     surround_key_tp10:surround.frag:KEY+TP10
+    surround_key_tp10_grade:surround.frag:KEY+TP10+GRADE
     surround_sharpen:surround.frag:SHARPEN
     surround_mask_sharpen:surround.frag:MASK_FIRST+SHARPEN
     screen_sharpen:screen.frag:SHARPEN

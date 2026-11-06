@@ -36,7 +36,8 @@ struct SurroundDraw {
   uvec4 mode;   // x projection: 0 = 180, 1 = 360, 2 = fisheye, 3 = equi-angular
                 // cubemap, 4 = cubemap turned to a 2x3 grid; y flags (video.glsl);
                 // z footprint taps per side at most (footprintSample);
-                // w the Opacity setting, percent (kAlphaOut)
+                // w the Opacity setting, percent (kAlphaOut); GRADE and KEY: its
+                // low byte, above it the room's grade (roomGains())
   vec4 yuv;     // kYuv: the planes' range (videoTap)
 };
 DECLARE_PUSH(SurroundDraw)
@@ -66,6 +67,21 @@ vec4 neutralRange() {
 #endif
   return vec4(pc.draw.toPicture0.w, pc.draw.toPicture1.w, pc.draw.toPicture2.w, last);
 }
+#ifdef GRADE
+// The room's light on the video (room_light.h): linear gains, only in the
+// pipelines for it (Pipelines::kSurroundMaskGrade and on), which draw only
+// while there is a grade: all the others stay as they are. A masked draw has
+// no key, so they sit in chroma; a keyed one has nothing free but mode.w's high
+// bytes, where 170 is exactly 1 (SceneRenderer::drawVideo).
+vec3 roomGains() {
+#ifdef KEY
+  uint g = pc.draw.mode.w >> 8u;
+  return vec3(float(g & 255u), float((g >> 8u) & 255u), float(g >> 16u)) * (1.0 / 170.0);
+#else
+  return pc.draw.chroma.yzw;
+#endif
+}
+#endif
 // The frame as it came at p (texture coordinates), full-size level, linear
 // colour: for the mask and the key, which the picture settings must not move.
 vec3 tap(vec2 p) { return videoTap(tex, chromaTex, p, isYuv(), neutralRange(), yuvMatrix()); }
@@ -269,6 +285,9 @@ void main() {
   }
   if (sharpened) c = sharpen(c, n[0], n[1], n[2], n[3], strength);
   if (keyed) c = srgbToLinear(removeSpill(linearToSrgb(c), chroma.z));
+#ifdef GRADE
+  c *= roomGains();  // after spill removal, which would take a green tint away again
+#endif
 #else
   bool packed = (flags & kPackedAlpha) != 0u && inside;
   if (packed) {
@@ -287,6 +306,9 @@ void main() {
     sharpened = !edge;
   }
   if (sharpened) c = sharpen(c, n[0], n[1], n[2], n[3], strength);
+#ifdef GRADE
+  c *= roomGains();  // before the key colour's cap, so that no tint makes the picture look like it
+#endif
   if (packed && keyGreen) {
     // The picture itself must never look like the key colour, or the
     // headset would cut holes into it (a green top, say): the key channel
@@ -301,6 +323,10 @@ void main() {
 #endif
   // The Opacity setting: native passthrough only, as the headset's keyer can't
   // show a half-green pixel as half see-through.
+#if defined(GRADE) && defined(KEY)
+  if (alphaOut) alpha *= float(pc.draw.mode.w & 255u) * 0.01;
+#else
   if (alphaOut) alpha *= float(pc.draw.mode.w) * 0.01;
+#endif
   fragColor = alphaOut ? vec4(c * alpha, alpha) : vec4(mix(kKeyColor, c, alpha), 1.0);
 }

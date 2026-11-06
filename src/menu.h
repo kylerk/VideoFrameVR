@@ -90,7 +90,11 @@ struct MenuCommand {
               SetupPlaces,  // ... the places ticked so far, one per line in path
               SetupStash,   // ... Stash connected: its address, then its API key, in path
               StashCard,  // the menu's "Use Stash?" card: value 1 used, 0 dismissed
-              DismissSetupBanner };  // the Library's "You're all set" after setup
+              DismissSetupBanner,  // the Library's "You're all set" after setup
+              // Matching the room's light (room_capture.h): on or off, reading
+              // the room, forgetting that, and how it becomes a grade (RoomTuning).
+              ToggleRoomMatch, RoomCapture, RoomForget, RoomDefaults, SetRoomTint, SetRoomBrightness,
+              SetRoomDarkest, SetRoomRed, SetRoomGreen, SetRoomBlue };
   Type type = None;
   // seconds (Seek, SeekTo), enum index, track id (0 = off), volume 0..100,
   // 1 = only the downloaded copy (DeleteFile), picture value
@@ -142,6 +146,11 @@ struct MenuView {
   GreenScreen greenScreen;   // of the running video
   bool packedAlpha = false;  // the running video brings its own mask (no keying needed)
   bool maskFormat = false;   // its format is the one a packed mask comes in (maskFormat())
+  bool roomMatch = true;     // global: the video takes the room's light (room_capture.h)
+  bool roomBusy = false;     // the room is being read
+  std::string roomStatus;    // ... what the last reading got
+  RoomTuning roomTuning;     // global: how a reading becomes a grade
+  std::string roomGains;     // the gains the shader gets now, as text
   std::string currentFile;
   bool playbackFailed = false;  // the current video couldn't be played
   Theme theme = Theme::Glass;

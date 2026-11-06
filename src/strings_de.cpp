@@ -49,6 +49,36 @@ Strings germanStrings(const Strings& english) {
   s.saturation = "Sättigung";
   s.opacity = "Deckkraft";
   s.opacityHint = "Bei Passthrough auf der Steam Frame: wie deckend das Video über deinem Raum ist.";
+  s.roomMatch = {
+      "Raum angleichen",
+      "An das Raumlicht angleichen",
+      "Passt dieses Video an das Raumlicht an. Aus zeigt seine eigenen Farben und behält die Messung.",
+      "Schaut einmal über die Headset-Ansicht auf den Raum und blendet das Video kurz aus. "
+      "Gespeichert werden nur Helligkeit und Farbe, nie das Bild.",
+      "Raum messen",
+      "Misst jetzt Helligkeit und Farbe des Raums.",
+      "Raum vergessen",
+      "Verwirft die Messung, das Video zeigt wieder seine eigenen Farben.",
+      "Standardwerte",
+      "Setzt die Regler oben auf ihre Standardwerte zurück.",
+      "Noch keine Messung.",
+      "Raum wird gemessen …",
+      "Raum: Helligkeit %.0f %%, Farbe %.2f %.2f %.2f",
+      "Raum konnte nicht gemessen werden: %s",
+      "die Headset-Ansicht ist schwarz",
+      "Farbstärke",
+      "Wie viel von der Raumfarbe das Video annimmt.",
+      "Abdunkelung",
+      "Wie viel von der Dunkelheit des Raums das Video annimmt.",
+      "Am dunkelsten",
+      "Wie stark ein dunkler Raum das Video höchstens abdunkelt.",
+      "Blendenstufen",
+      "Rot",
+      "Grün",
+      "Blau",
+      "Eine letzte Anpassung dieser Farbe, zusätzlich zu allem anderen.",
+      "Aktuelle Werte: R %.2f  G %.2f  B %.2f",
+  };
   s.zoom = "Zoom (180°/360°)";
   s.reset = "Zurücksetzen";
   s.design = "Design";

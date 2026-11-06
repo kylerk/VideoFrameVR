@@ -49,6 +49,36 @@ Strings spanishStrings(const Strings& english) {
   s.saturation = "Saturación";
   s.opacity = "Opacidad";
   s.opacityHint = "Con passthrough en Steam Frame: cuánto cubre el vídeo tu habitación.";
+  s.roomMatch = {
+      "Igualar la habitación",
+      "Igualar la luz de la habitación",
+      "Ajusta este vídeo a la luz de la habitación. Desactivado muestra sus colores y conserva la lectura.",
+      "Mira una vez la habitación a través de la vista del visor y oculta el vídeo un momento. "
+      "Solo se guardan el brillo y el color, nunca la imagen.",
+      "Leer la habitación",
+      "Lee ahora el brillo y el color de la habitación.",
+      "Olvidar habitación",
+      "Descarta la lectura y el vídeo vuelve a sus propios colores.",
+      "Valores predeterminados",
+      "Devuelve los controles de arriba a sus valores predeterminados.",
+      "Aún no hay lectura.",
+      "Leyendo la habitación …",
+      "Habitación: brillo %.0f %%, color %.2f %.2f %.2f",
+      "No se pudo leer la habitación: %s",
+      "la vista del visor está en negro",
+      "Intensidad del tono",
+      "Cuánto del color de la habitación toma el vídeo.",
+      "Intensidad de atenuación",
+      "Cuánta oscuridad de la habitación toma el vídeo.",
+      "Máxima oscuridad",
+      "Lo máximo que una habitación oscura puede atenuar el vídeo.",
+      "pasos",
+      "Rojo",
+      "Verde",
+      "Azul",
+      "Un ajuste final de este color, además de todo lo demás.",
+      "Valores actuales: R %.2f  G %.2f  B %.2f",
+  };
   s.zoom = "Zoom (180°/360°)";
   s.reset = "Restablecer";
   s.design = "Diseño";

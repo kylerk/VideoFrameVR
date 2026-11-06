@@ -49,6 +49,36 @@ Strings frenchStrings(const Strings& english) {
   s.saturation = "Saturation";
   s.opacity = "Opacité";
   s.opacityHint = "Avec le passthrough sur Steam Frame : à quel point la vidéo couvre votre pièce.";
+  s.roomMatch = {
+      "Accorder à la pièce",
+      "Accorder à la lumière de la pièce",
+      "Ajuste cette vidéo à la lumière de la pièce. Désactivé, elle garde ses couleurs et la mesure est conservée.",
+      "Regarde une fois la pièce par la vue du casque et masque la vidéo un instant. "
+      "Seules la luminosité et la couleur sont gardées, jamais l'image.",
+      "Mesurer la pièce",
+      "Mesure maintenant la luminosité et la couleur de la pièce.",
+      "Oublier la pièce",
+      "Efface la mesure : la vidéo retrouve ses propres couleurs.",
+      "Valeurs par défaut",
+      "Remet les curseurs ci-dessus à leurs valeurs par défaut.",
+      "Pas encore de mesure.",
+      "Mesure de la pièce …",
+      "Pièce : luminosité %.0f %%, couleur %.2f %.2f %.2f",
+      "Impossible de mesurer la pièce : %s",
+      "la vue du casque est noire",
+      "Force de la teinte",
+      "La part de la couleur de la pièce que prend la vidéo.",
+      "Force de l'assombrissement",
+      "La part de l'obscurité de la pièce que prend la vidéo.",
+      "Le plus sombre",
+      "Le maximum dont une pièce sombre peut assombrir la vidéo.",
+      "diaphs",
+      "Rouge",
+      "Vert",
+      "Bleu",
+      "Un dernier réglage de cette couleur, en plus de tout le reste.",
+      "Valeurs actuelles : R %.2f  V %.2f  B %.2f",
+  };
   s.zoom = "Zoom (180°/360°)";
   s.reset = "Réinitialiser";
   s.design = "Style";

@@ -514,6 +514,37 @@ struct ViewpointStrings {
 };
 
 // Passthrough switching itself on (Settings → View, see_through.h).
+// Matching the video to the room's light (room_capture.h).
+struct RoomMatchStrings {
+  const char* group;
+  const char* enabled;       // toggle: off shows the video's own colours, keeping the reading
+  const char* enabledTip;
+  const char* hint;
+  const char* capture;       // reads the room now
+  const char* captureTip;
+  const char* forget;
+  const char* forgetTip;
+  const char* defaults;      // the sliders back to their defaults
+  const char* defaultsTip;
+  const char* noReading;
+  const char* reading;       // while it reads the room
+  const char* reads;         // printf format: brightness in percent, then red, green, blue
+  const char* failed;        // printf format: what went wrong
+  const char* black;         // ... the headset view showed nothing
+  const char* tintStrength;  // sliders: RoomTuning
+  const char* tintStrengthTip;
+  const char* brightnessStrength;
+  const char* brightnessStrengthTip;
+  const char* darkest;
+  const char* darkestTip;
+  const char* stops;         // the unit after the darkest level's number
+  const char* red;
+  const char* green;
+  const char* blue;
+  const char* trimTip;
+  const char* gains;         // printf format: the shader's red, green and blue gains
+};
+
 struct AutoPassthroughStrings {
   const char* setting;
   const char* hint;         // Frame
@@ -1164,6 +1195,7 @@ struct Strings {
   SetupStrings setup;
   ControllerStrings controls;
   DeleteStrings deletion;
+  RoomMatchStrings roomMatch;
 };
 
 const Strings& strings();

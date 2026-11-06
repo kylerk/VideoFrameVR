@@ -77,6 +77,13 @@ std::string allLines(const Settings& s) {
   out << "anti_shimmer=" << antiShimmerName(s.antiShimmer) << "\n";
   out << "sharpen=" << s.sharpen << "\n";
   out << "tone_look=" << (s.toneLook ? 1 : 0) << "\n";
+  out << "room_match=" << (s.roomMatch ? 1 : 0) << "\n";
+  out << "room_tint=" << s.roomTuning.tint << "\n";
+  out << "room_brightness=" << s.roomTuning.brightness << "\n";
+  out << "room_darkest=" << s.roomTuning.darkest << "\n";
+  out << "room_red=" << s.roomTuning.red << "\n";
+  out << "room_green=" << s.roomTuning.green << "\n";
+  out << "room_blue=" << s.roomTuning.blue << "\n";
   if (s.videoResolution > 0)
     out << "video_resolution=" << s.videoResolution << "\n";
   else if (s.legacyRenderScale > 0)
@@ -241,6 +248,13 @@ static Settings readEntries(Settings s, const Entries& file, bool oldFoveation) 
     else if (key == "anti_shimmer") parseAntiShimmer(value, s.antiShimmer);
     else if (key == "sharpen") s.sharpen = std::clamp(std::atoi(value.c_str()), 0, 300);
     else if (key == "tone_look") s.toneLook = value == "1";
+    else if (key == "room_match") s.roomMatch = value != "0";
+    else if (key == "room_tint") s.roomTuning.tint = std::clamp(std::atoi(value.c_str()), 0, 100);
+    else if (key == "room_brightness") s.roomTuning.brightness = std::clamp(std::atoi(value.c_str()), 0, 100);
+    else if (key == "room_darkest") s.roomTuning.darkest = std::clamp(std::atoi(value.c_str()), 0, 400);
+    else if (key == "room_red") s.roomTuning.red = std::clamp(std::atoi(value.c_str()), 0, 150);
+    else if (key == "room_green") s.roomTuning.green = std::clamp(std::atoi(value.c_str()), 0, 150);
+    else if (key == "room_blue") s.roomTuning.blue = std::clamp(std::atoi(value.c_str()), 0, 150);
     else if (key == "render_scale")
       s.legacyRenderScale = std::clamp(std::atoi(value.c_str()), 50, 200);
     else if (key == "video_resolution")

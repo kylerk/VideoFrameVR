@@ -49,6 +49,36 @@ Strings brazilianPortugueseStrings(const Strings& english) {
   s.saturation = "Saturação";
   s.opacity = "Opacidade";
   s.opacityHint = "Com passthrough no Steam Frame: o quanto o vídeo cobre o seu ambiente.";
+  s.roomMatch = {
+      "Combinar com o ambiente",
+      "Combinar com a luz do ambiente",
+      "Ajusta este vídeo à luz do ambiente. Desligado mostra as cores dele e mantém a leitura.",
+      "Olha uma vez o ambiente pela visão do headset, ocultando o vídeo por um instante. "
+      "Só o brilho e a cor são guardados, nunca a imagem.",
+      "Ler o ambiente",
+      "Lê agora o brilho e a cor do ambiente.",
+      "Esquecer ambiente",
+      "Descarta a leitura e o vídeo volta às próprias cores.",
+      "Valores padrão",
+      "Volta os controles acima aos valores padrão.",
+      "Nenhuma leitura ainda.",
+      "Lendo o ambiente …",
+      "Ambiente: brilho %.0f %%, cor %.2f %.2f %.2f",
+      "Não foi possível ler o ambiente: %s",
+      "a visão do headset está preta",
+      "Força do tom",
+      "Quanto da cor do ambiente o vídeo assume.",
+      "Força do escurecimento",
+      "Quanto da escuridão do ambiente o vídeo assume.",
+      "Mais escuro",
+      "O máximo que um ambiente escuro pode escurecer o vídeo.",
+      "pontos",
+      "Vermelho",
+      "Verde",
+      "Azul",
+      "Um ajuste final desta cor, além de todo o resto.",
+      "Valores atuais: R %.2f  G %.2f  B %.2f",
+  };
   s.zoom = "Zoom (180°/360°)";
   s.reset = "Redefinir";
   s.design = "Aparência";

@@ -41,6 +41,7 @@
 #include "setup_intro.h"
 #include "setup_placement.h"
 #include "remote.h"
+#include "room_capture.h"
 #include "stash.h"
 #include "stash_delete.h"
 #include "stash_stream.h"
@@ -734,6 +735,30 @@ int run(GLFWwindow* window, const Options& opts) {
   // Passthrough switching itself on for videos made for it (see_through.h):
   // once per video, when its size and settings are known.
   GreenScreenCheck greenCheck;
+  // The room's light on passthrough video: this run's, until forgotten. What
+  // follows from it is worked out only when something changes, not per frame.
+  RoomCapture roomCapture;
+  RoomEstimate roomLight;
+  std::string roomError, roomStatus, roomGainsText;
+  float roomGains[3] = {1, 1, 1};
+  auto roomChanged = [&] {
+    roomGrade(settings.roomMatch ? roomLight : RoomEstimate{}, settings.roomTuning, roomGains);
+    const RoomMatchStrings& t = strings().roomMatch;
+    char text[192];
+    if (roomCapture.busy())
+      std::snprintf(text, sizeof(text), "%s", t.reading);
+    else if (!roomError.empty())
+      std::snprintf(text, sizeof(text), t.failed, roomError.c_str());
+    else if (roomLight.ok)
+      std::snprintf(text, sizeof(text), t.reads, roomLight.luminance * 100.0f, roomLight.tint[0],
+                    roomLight.tint[1], roomLight.tint[2]);
+    else
+      std::snprintf(text, sizeof(text), "%s", t.noReading);
+    roomStatus = text;
+    std::snprintf(text, sizeof(text), t.gains, roomGains[0], roomGains[1], roomGains[2]);
+    roomGainsText = text;
+  };
+  roomChanged();
   bool passthroughSettled = false;
   double greenCheckAt = 0;  // glfwGetTime() the check starts, a moment after the video opens
   const char* passthroughWhy = nullptr;  // the notice's first line
@@ -1013,6 +1038,12 @@ int run(GLFWwindow* window, const Options& opts) {
   auto keepScreenSize = [&] {
     app.screen.size = app.screen.size.clamped();
     settings.screen = app.screen.size;
+    storeVideoSoon(VideoSettings::kScreen);
+  };
+  // A slider of the room's grade moved: shown at once, saved with the settings
+  // soon (kScreen stores them), not at every step of a drag.
+  auto roomTuned = [&] {
+    roomChanged();
     storeVideoSoon(VideoSettings::kScreen);
   };
   // Passthrough switched on for a video made for it, saying so the first time ever.
@@ -1540,6 +1571,7 @@ int run(GLFWwindow* window, const Options& opts) {
         }
         settings.language = languageCode(static_cast<int>(c.value));
         setLanguage(settings.language);
+        roomChanged();
         menu.languageChanged();
         saveSettings(settings);
         break;
@@ -1660,6 +1692,49 @@ int run(GLFWwindow* window, const Options& opts) {
         break;
       case MenuCommand::TogglePassthrough:
         app.togglePassthrough = true;
+        break;
+      case MenuCommand::ToggleRoomMatch:
+        settings.roomMatch = !settings.roomMatch;
+        roomChanged();
+        saveSettings(settings);
+        break;
+      case MenuCommand::RoomCapture:
+        roomCapture.start();
+        roomError.clear();
+        roomChanged();
+        break;
+      case MenuCommand::RoomForget:
+        roomLight = RoomEstimate{};
+        roomError.clear();
+        roomChanged();
+        break;
+      case MenuCommand::RoomDefaults:
+        settings.roomTuning = RoomTuning{};
+        roomTuned();
+        break;
+      case MenuCommand::SetRoomTint:
+        settings.roomTuning.tint = std::clamp(static_cast<int>(c.value), 0, 100);
+        roomTuned();
+        break;
+      case MenuCommand::SetRoomBrightness:
+        settings.roomTuning.brightness = std::clamp(static_cast<int>(c.value), 0, 100);
+        roomTuned();
+        break;
+      case MenuCommand::SetRoomDarkest:
+        settings.roomTuning.darkest = std::clamp(static_cast<int>(c.value), 0, 400);
+        roomTuned();
+        break;
+      case MenuCommand::SetRoomRed:
+        settings.roomTuning.red = std::clamp(static_cast<int>(c.value), 0, 150);
+        roomTuned();
+        break;
+      case MenuCommand::SetRoomGreen:
+        settings.roomTuning.green = std::clamp(static_cast<int>(c.value), 0, 150);
+        roomTuned();
+        break;
+      case MenuCommand::SetRoomBlue:
+        settings.roomTuning.blue = std::clamp(static_cast<int>(c.value), 0, 150);
+        roomTuned();
         break;
       case MenuCommand::TogglePackedMask: {
         // Nothing is stored when the choice is what the name says.
@@ -2001,6 +2076,18 @@ int run(GLFWwindow* window, const Options& opts) {
     }
 
     if (app.saveAt > 0 && glfwGetTime() >= app.saveAt) saveUnsaved();
+    {
+      RoomEstimate read;
+      RoomCapture::Failure failure;
+      std::string detail;
+      if (roomCapture.take(read, failure, detail)) {
+        if (failure == RoomCapture::Failure::None) roomLight = read;
+        roomError = failure == RoomCapture::Failure::Black ? strings().roomMatch.black
+                    : failure == RoomCapture::Failure::Device ? detail
+                                                              : std::string();
+        roomChanged();
+      }
+    }
     if (const int volume = static_cast<int>(std::lround(player.playback().volume));
         !volumeApplied)
       volumeApplied = volume == settings.volume;
@@ -2914,6 +3001,11 @@ int run(GLFWwindow* window, const Options& opts) {
       view.antiShimmer = antiShimmer;
       view.sharpen = settings.sharpen;
       view.toneLook = settings.toneLook;
+      view.roomMatch = settings.roomMatch;
+      view.roomBusy = roomCapture.busy();
+      view.roomStatus = roomStatus;
+      view.roomTuning = settings.roomTuning;
+      view.roomGains = roomGainsText;
       view.videoResolution = pendingResolution > 0 ? pendingResolution : chosenResolution();
       view.resolutionStops = resolutionStops.empty() ? nullptr : &resolutionStops;
       view.resolutionPending = pendingResolution > 0;
@@ -3091,6 +3183,7 @@ int run(GLFWwindow* window, const Options& opts) {
       video.antiShimmer = antiShimmer;
       video.look = settings.toneLook;
       video.sharpen = settings.sharpen / 100.0f;
+      std::copy(roomGains, roomGains + 3, video.grade);
       video.seeThrough = focusIn.seeThrough;
       video.key = app.video.greenScreen;
       video.correction = focusOut.correction;
@@ -3221,6 +3314,15 @@ int run(GLFWwindow* window, const Options& opts) {
     interop.publish();
     timer.lap(FrameTimer::Draw);
 
+    // A picture of the room through the headset view: nothing drawn over it.
+    const bool roomBlank = roomCapture.blanking() && xr.alphaBlendSupported();
+    if (roomBlank) {
+      scene.video.reset();
+      scene.overlays.clear();
+      scene.sky = false;
+      scene.clear = ClearMode::Transparent;
+    }
+
     // One submission per drawn frame: a frame slot once the GPU is done with
     // its last frame, then the eye images, recorded, submitted and given back.
     bool drawn = false;
@@ -3283,7 +3385,7 @@ int run(GLFWwindow* window, const Options& opts) {
       }
     }
     gpu.collect();
-    xr.setAlphaBlend(alphaPassthrough);
+    xr.setAlphaBlend(alphaPassthrough || roomBlank);
     xr.releaseEyes();
     xr.endFrame(drawn);
     directDepth.submit();  // after the frame's work, which it never delays
