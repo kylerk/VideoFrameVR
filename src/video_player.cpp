@@ -717,10 +717,23 @@ void VideoPlayer::setSubtitleStyle(double scale, int raise) {
 }
 
 void VideoPlayer::setPicture(int brightness, int contrast, int saturation) {
-  setProperty(mpv_, "brightness", std::to_string(brightness));
-  setProperty(mpv_, "contrast", std::to_string(contrast));
-  setProperty(mpv_, "saturation", std::to_string(saturation));
+  picture_[0] = brightness;
+  picture_[1] = contrast;
+  picture_[2] = saturation;
+  sendPicture();
   if (direct_) direct_->setPicture(brightness, contrast, saturation);
+}
+
+void VideoPlayer::setPictureInRenderer(bool inRenderer) {
+  if (inRenderer == pictureInRenderer_) return;
+  pictureInRenderer_ = inRenderer;
+  sendPicture();
+}
+
+void VideoPlayer::sendPicture() {
+  setProperty(mpv_, "brightness", std::to_string(pictureInRenderer_ ? 0 : picture_[0]));
+  setProperty(mpv_, "contrast", std::to_string(pictureInRenderer_ ? 0 : picture_[1]));
+  setProperty(mpv_, "saturation", std::to_string(pictureInRenderer_ ? 0 : picture_[2]));
 }
 
 void VideoPlayer::setTvGamma(bool tvGamma) {

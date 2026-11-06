@@ -3068,7 +3068,13 @@ int run(GLFWwindow* window, const Options& opts) {
       video.frameAspect = frameAspect;
       video.flip = app.flipVideo;
       video.screen = app.screen;
-      if (photo) {  // brightness etc. are applied while drawing (mpv does it for videos)
+      // Brightness etc.: mpv does it for videos, except that a mask or key read
+      // from mpv's image must not change with them. Those images come plain, and
+      // get them while drawing, as photos do. Decoded frames have their own
+      // conversion (YuvColor).
+      const bool readFromImage = focusIn.seeThrough.packedAlpha || focusIn.seeThrough.greenKey > 0;
+      if (!photo) player.setPictureInRenderer(readFromImage);
+      if (photo || (readFromImage && videoImage && !videoImage->yuv)) {
         video.adjust[0] = app.video.brightness / 100.0f;
         video.adjust[1] = app.video.contrast / 100.0f;
         video.adjust[2] = app.video.saturation / 100.0f;

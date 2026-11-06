@@ -424,11 +424,8 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
   if (clear == ClearMode::KeyGreen) flags |= kKeyGreen;
   if (clear == ClearMode::Transparent) flags |= kAlphaOut;
   if (clear != ClearMode::Dark) {
-    // The packed mask is centred on each eye's part at 40% of its size.
     if (v.seeThrough.packedAlpha) flags |= kPackedAlpha;
     else if (v.seeThrough.greenKey > 0) flags |= kChromaKey;
-    p.alpha[0] = 0.4f * eye.stereo[0];
-    p.alpha[1] = 0.4f * eye.stereo[1];
     // The green screen settings (0..100) as the shader's thresholds.
     p.chroma[0] = v.seeThrough.greenKey;
     p.chroma[1] = 0.005f + 0.045f * v.key.softness / 100.0f;
@@ -452,6 +449,8 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
   if (yuv) {
     const YuvColor& c = yuv->color();
     for (int i = 0; i < 4; ++i) p.yuv[i] = c.range[i];
+    for (int i = 0; i < 3; ++i) p.toPicture[i][3] = c.neutralRange[i];
+    p.alpha[1] = c.neutralRange[3];
     p.params[2] = c.matrix[0];
     p.params[3] = c.matrix[1];
     p.alpha[2] = c.matrix[2];

@@ -18,7 +18,9 @@
 #include "projection.glsl"
 
 struct SurroundDraw {
-  vec4 toPicture0;  // columns of the rotation from local space into the picture's axes
+  // xyz: columns of the rotation from local space into the picture's axes;
+  // w: the first three of neutralRange()
+  vec4 toPicture0;
   vec4 toPicture1;
   vec4 toPicture2;
   vec4 params;  // x fisheye field of view (radians), y zoom (> 1 magnifies); zw Kr, Kb (kYuv)
@@ -27,7 +29,7 @@ struct SurroundDraw {
   // spill removal 0..2, w = shrink: how many texels the cut reaches past
   // what looks green.
   vec4 chroma;
-  vec4 alpha;   // packed alpha: xy = each eye's mask size, in parts of the frame;
+  vec4 alpha;   // x unused; y the last of neutralRange();
                 // zw the chroma lookup's offset (kYuv)
   uvec4 mode;   // x projection: 0 = 180, 1 = 360, 2 = fisheye, 3 = equi-angular
                 // cubemap, 4 = cubemap turned to a 2x3 grid; y flags (video.glsl);
@@ -50,8 +52,15 @@ bool isYuv() { return true; }
 bool isYuv() { return (pc.draw.mode.y & kYuv) != 0u; }
 #endif
 vec4 yuvMatrix() { return vec4(pc.draw.params.zw, pc.draw.alpha.zw); }
-// The picture at p (texture coordinates), full-size level, linear colour.
-vec3 tap(vec2 p) { return videoTap(tex, chromaTex, p, isYuv(), pc.draw.yuv, yuvMatrix()); }
+// A decoded frame's range without brightness, contrast and saturation
+// (YuvColor::neutralRange): the push constants are full, so it sits in their
+// unused parts.
+vec4 neutralRange() {
+  return vec4(pc.draw.toPicture0.w, pc.draw.toPicture1.w, pc.draw.toPicture2.w, pc.draw.alpha.y);
+}
+// The frame as it came at p (texture coordinates), full-size level, linear
+// colour: for the mask and the key, which the picture settings must not move.
+vec3 tap(vec2 p) { return videoTap(tex, chromaTex, p, isYuv(), neutralRange(), yuvMatrix()); }
 
 layout(location = 0) in vec2 vNdc;
 layout(location = 0) out vec4 fragColor;
@@ -71,12 +80,12 @@ vec3 picture(vec2 uv, vec2 lo, vec2 hi, vec2 dx, vec2 dy, EyeData e, uint flags,
   return clamp(applyLook(adjustPicture(c, pc.draw.adjust.xyz), e, flags, fragCoord), 0.0, 1.0);
 }
 
-// DeoVR's packed alpha at uv: each eye's mask, at alpha.xy of the frame,
-// sits centred on the middle of the top edge (left eye) or on the corners
-// (right eye) and wraps around the frame's edges (into the corners and gaps
-// next to the fisheye circles). Its red channel is opacity.
+// DeoVR's packed alpha at uv: each eye's mask, at 40% of its part of the
+// frame, sits centred on the middle of the top edge (left eye) or on the
+// corners (right eye) and wraps around the frame's edges (into the corners and
+// gaps next to the fisheye circles). Its red channel is opacity.
 float packedAlpha(vec2 uv, EyeData e, vec2 dx, vec2 dy) {
-  vec2 alphaScale = pc.draw.alpha.xy;
+  vec2 alphaScale = 0.4 * e.stereo.xy;
   vec2 alphaCenter = vec2(e.position.w < 0.5 ? 0.5 : 0.0, 0.0);
   vec2 m = uv - 0.5;
   if (length(m) > 0.5) return 0.0;
@@ -85,6 +94,13 @@ float packedAlpha(vec2 uv, EyeData e, vec2 dx, vec2 dy) {
   float red = linearToSrgb(mask).r;
   // Compression leaves black a little above 0 and full red below 1.
   return smoothstep(0.08, 0.92, red);
+}
+
+// How much of the frame stays at p (texture coordinates) under the green
+// screen key, measured on the frame as it came: dx, dy as sampled there.
+float keyAlpha(vec2 p, vec2 dx, vec2 dy, vec4 chroma) {
+  vec3 t = clamp(isYuv() ? tap(p) : textureGrad(tex, p, dx, dy).rgb, 0.0, 1.0);
+  return chromaAlpha(linearToSrgb(t), chroma);
 }
 
 void main() {
@@ -204,6 +220,7 @@ void main() {
   vec4 chroma = pc.draw.chroma;
   bool packed = (flags & kPackedAlpha) != 0u && inside;
   bool keyed = !packed && (flags & kChromaKey) != 0u && inside;
+  vec2 eyeDx = dx * eyeScale, eyeDy = dy * eyeScale;
   if (packed) {
 #ifdef MASK_FIRST
     alpha = maskAlpha;
@@ -211,15 +228,13 @@ void main() {
     alpha = packedAlpha(uv, e, dx, dy);
 #endif
   } else if (keyed) {
-    alpha = chromaAlpha(linearToSrgb(c), chroma);
+    alpha = keyAlpha(eyeUv, eyeDx, eyeDy, chroma);
     if (chroma.w > 0.0 && alpha > 0.0) {
       // Shrink: cut where any neighbour that far away is cut.
       vec2 texel = chroma.w / videoSize(tex, chromaTex);
-      vec2 dxs = dx * eyeScale, dys = dy * eyeScale;
       NEIGHBOURS (int i = 0; i < 4; ++i) {
         vec2 o = texel * vec2(i == 0 ? 1.0 : i == 1 ? -1.0 : 0.0, i == 2 ? 1.0 : i == 3 ? -1.0 : 0.0);
-        vec3 t = clamp(isYuv() ? tap(eyeUv + o) : textureGrad(tex, eyeUv + o, dxs, dys).rgb, 0.0, 1.0);
-        alpha = min(alpha, chromaAlpha(linearToSrgb(t), chroma));
+        alpha = min(alpha, keyAlpha(eyeUv + o, eyeDx, eyeDy, chroma));
       }
     }
   }
@@ -229,7 +244,7 @@ void main() {
     bool edge = alpha < 1.0;
     NEIGHBOURS (int i = 0; i < 4; ++i)
       edge = edge || (packed ? packedAlpha(nUv[i], e, dx, dy)
-                             : chromaAlpha(linearToSrgb(n[i]), chroma)) < 1.0;
+                             : keyAlpha(eyeOffset + nUv[i] * eyeScale, eyeDx, eyeDy, chroma)) < 1.0;
     sharpened = !edge;
   }
   if (sharpened) c = sharpen(c, n[0], n[1], n[2], n[3], strength);
