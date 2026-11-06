@@ -29,6 +29,7 @@ struct VideoSettings {
   bool hasFormat = false;  // the format was chosen by hand
   VideoFormat format;
   int brightness = 0, contrast = 0, saturation = 0;  // mpv's -100..100
+  int opacity = 100;  // over the room with passthrough, percent; apart from the mask or key
   float zoom = 1.0f;  // 180°/360° video: magnification
   float originForward = 0;  // surround viewpoint, in sphere radii toward the picture
   // Persisted control range. The combined origin and head motion are eased
@@ -58,7 +59,7 @@ struct VideoSettings {
   ScreenSize screen;
 
   bool pictureIsDefault() const {
-    return brightness == 0 && contrast == 0 && saturation == 0 && zoom == 1.0f;
+    return brightness == 0 && contrast == 0 && saturation == 0 && opacity == 100 && zoom == 1.0f;
   }
   // Nothing remembered: the video follows the defaults.
   bool isDefault() const {
@@ -71,8 +72,8 @@ struct VideoSettings {
   enum Part : unsigned { kFormat = 1, kBrightness = 2, kContrast = 4, kSaturation = 8, kZoom = 16,
                          kVolume = 32, kGreenScreen = 64, kFocus = 128, kPassthrough = 256,
                          kScreen = 512, kOrigin = 1024, kGreenCheck = 2048, kPackedMask = 4096,
-                         kAll = 8191,
-                         kPicture = kBrightness | kContrast | kSaturation | kZoom };
+                         kOpacity = 8192, kAll = 16383,
+                         kPicture = kBrightness | kContrast | kSaturation | kOpacity | kZoom };
   // Takes these parts from `other`.
   void take(const VideoSettings& other, unsigned parts) {
     if (parts & kFormat) {
@@ -82,6 +83,7 @@ struct VideoSettings {
     if (parts & kBrightness) brightness = other.brightness;
     if (parts & kContrast) contrast = other.contrast;
     if (parts & kSaturation) saturation = other.saturation;
+    if (parts & kOpacity) opacity = other.opacity;
     if (parts & kZoom) zoom = other.zoom;
     if (parts & kOrigin) originForward = other.originForward;
     if (parts & kPassthrough) {
@@ -109,7 +111,7 @@ struct VideoSettings {
     return hasFormat == o.hasFormat && format.projection == o.format.projection &&
            format.stereo == o.format.stereo && format.packing == o.format.packing &&
            brightness == o.brightness && contrast == o.contrast && saturation == o.saturation &&
-           zoom == o.zoom && passthrough == o.passthrough && volume == o.volume && g.on == h.on &&
+           opacity == o.opacity && zoom == o.zoom && passthrough == o.passthrough && volume == o.volume && g.on == h.on &&
            g.strength == h.strength &&
            g.softness == h.softness && g.spill == h.spill && g.shrink == h.shrink &&
            hasFocus == o.hasFocus && focus == o.focus && hasScreen == o.hasScreen &&

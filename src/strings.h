@@ -935,6 +935,8 @@ struct Strings {
   const char* brightness;
   const char* contrast;
   const char* saturation;
+  const char* opacity;
+  const char* opacityHint;
   const char* zoom;
   const char* reset;
   const char* design;

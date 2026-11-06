@@ -45,7 +45,11 @@ struct VideoDraw {
   float frameAspect = 16.0f / 9.0f;  // the whole frame's width / height (both eyes, if stereo)
   bool flip = false;
   ScreenPlacement screen;
-  float adjust[3] = {0, 0, 0};  // brightness, contrast, saturation -1..1 (photos; mpv adjusts video)
+  // Brightness, contrast, saturation -1..1: photos, and mpv's images while a
+  // mask or key is shown (VideoPlayer::setPictureInRenderer); else mpv or the
+  // decoded frame's YuvColor adjusts video.
+  float adjust[3] = {0, 0, 0};
+  float opacity = 1;            // with native passthrough: how much of the room stays hidden, 0..1
   bool mipmaps = true;          // trilinear through the mipmaps, else the full-size level
   AntiShimmer antiShimmer = AntiShimmer::Off;  // ... sampled over each pixel's footprint
   bool look = false;            // tone curve and vignette
@@ -137,11 +141,13 @@ enum VideoFlag : uint32_t {
 
 // shaders/surround.frag, SurroundDraw.
 struct SurroundPush {
-  float toPicture[3][4];  // columns of the rotation from local space into the picture's axes
+  // xyz: columns of the rotation from local space into the picture's axes;
+  // w: kYuv, YuvColor::neutralRange 0..2
+  float toPicture[3][4];
   float params[4];        // x fisheye field of view (radians), y zoom; zw Kr, Kb (kYuv)
   float adjust[4];  // w: sharpening strength
   float chroma[4];
-  float alpha[4];    // zw: kYuv, the chroma lookup's offset
+  float alpha[4];    // x: the Opacity setting; y: kYuv, neutralRange 3; zw: kYuv, the chroma lookup's offset
   uint32_t mode[4];  // x projection, y flags, z footprint taps (antiShimmerTaps)
   float yuv[4];      // kYuv: YuvColor::range
 };

@@ -94,6 +94,10 @@ class VideoPlayer {
   void setSubtitleStyle(double scale, int raise);
   // Picture adjustments, -100..100 each (0 = unchanged).
   void setPicture(int brightness, int contrast, int saturation);
+  // mpv draws its image without those, for the renderer to apply them: while a
+  // packed mask or a green screen is read from that image, which they must not
+  // change. Decoded frames handed out directly don't need this (YuvColor).
+  void setPictureInRenderer(bool inRenderer);
   // SDR video keeps its own values (as VR players show it) unless tvGamma:
   // then mpv converts it from a TV's gamma (BT.1886) to sRGB, darkening the
   // shadows. HDR is tone-mapped to sRGB either way.
@@ -246,7 +250,10 @@ class VideoPlayer {
   bool mipmaps_ = true;
   bool sharpened_ = false;
   bool tvGamma_ = false;
-  std::string sourceTrc_;            // the video's transfer, as mpv names it
+  void sendPicture();                // to mpv: picture_, or nothing with pictureInRenderer_
+  int picture_[3] = {0, 0, 0};       // brightness, contrast, saturation
+  bool pictureInRenderer_ = false;
+  std::string sourceTrc_;           // the video's transfer, as mpv names it
   std::string targetTrc_ = "srgb";   // what mpv converts it to
   bool shutdown_ = false;
   enum class VideoSleep { Awake, Closing, Closed, Opening, Seeking };

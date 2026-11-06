@@ -47,6 +47,8 @@ Strings japaneseStrings(const Strings& english) {
   s.brightness = "明るさ";
   s.contrast = "コントラスト";
   s.saturation = "彩度";
+  s.opacity = "不透明度";
+  s.opacityHint = "Steam Frame のパススルー時に、部屋に重なる動画の濃さを調整します。";
   s.zoom = "ズーム (180°/360°)";
   s.reset = "リセット";
   s.design = "デザイン";
@@ -691,7 +693,7 @@ Strings japaneseStrings(const Strings& english) {
 
   s.tipAdvanced = "設定ページに詳細な調整項目を表示。";
   s.tipSubtitleRaise = "立体表示する字幕を上下に移動。";
-  s.tipPictureReset = "この動画の明るさ・コントラスト・彩度・ズーム・視点をリセット。";
+  s.tipPictureReset = "この動画の明るさ・コントラスト・彩度・不透明度・ズーム・視点をリセット。";
   s.tipMipmaps = "各フレームの縮小コピーを使い、縮小映像を滑らかに。";
   s.tipMipmapsFrame = "縮小映像を滑らかに。FrameのGPU負荷が増加。";
   s.tipSharpen = "全動画の輪郭を強調。";

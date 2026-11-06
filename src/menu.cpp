@@ -171,6 +171,7 @@ void Menu::update(const MenuView& view) {
   if (view.brightness != view_.brightness) sliderChanged(MenuCommand::SetBrightness);
   if (view.contrast != view_.contrast) sliderChanged(MenuCommand::SetContrast);
   if (view.saturation != view_.saturation) sliderChanged(MenuCommand::SetSaturation);
+  if (view.opacity != view_.opacity) sliderChanged(MenuCommand::SetOpacity);
   if (view.zoom != view_.zoom) sliderChanged(MenuCommand::SetZoom);
   if (view.originForward != view_.originForward) sliderChanged(MenuCommand::SetOriginForward);
   if (view.sharpen != view_.sharpen) sliderChanged(MenuCommand::SetSharpen);
