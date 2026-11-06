@@ -47,6 +47,8 @@ Strings germanStrings(const Strings& english) {
   s.brightness = "Helligkeit";
   s.contrast = "Kontrast";
   s.saturation = "Sättigung";
+  s.opacity = "Deckkraft";
+  s.opacityHint = "Bei Passthrough auf der Steam Frame: wie deckend das Video über deinem Raum ist.";
   s.zoom = "Zoom (180°/360°)";
   s.reset = "Zurücksetzen";
   s.design = "Design";
@@ -691,7 +693,7 @@ Strings germanStrings(const Strings& english) {
 
   s.tipAdvanced = "Zeigt Feineinstellungen auf den Einstellungsseiten.";
   s.tipSubtitleRaise = "Schwebende Untertitel nach oben oder unten verschieben.";
-  s.tipPictureReset = "Helligkeit, Kontrast, Sättigung, Zoom und Blickpunkt dieses Videos zurücksetzen.";
+  s.tipPictureReset = "Helligkeit, Kontrast, Sättigung, Deckkraft, Zoom und Blickpunkt dieses Videos zurücksetzen.";
   s.tipMipmaps = "Verkleinerte Videos mit kleineren Kopien jedes Bildes glätten.";
   s.tipMipmapsFrame = "Verkleinerte Videos glätten. Braucht GPU-Zeit auf dem Frame.";
   s.tipSharpen = "Kanten in allen Videos betonen.";

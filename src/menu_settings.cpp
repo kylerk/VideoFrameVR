@@ -395,6 +395,16 @@ void Menu::layoutVideoSettings() {
     y += kSettingStep;
   }
   {
+    // Only the Frame's own passthrough blends, where the runtime offers it: a
+    // PC streaming to it is keyed, all or nothing.
+    const int now = view_.opacity;
+    addValueRow(x, y, w, 230, t.opacity, std::to_string(now) + " %", now, 0, 100,
+                command(MenuCommand::SetOpacity, std::max(0, now - kPictureStep)),
+                command(MenuCommand::SetOpacity, std::min(100, now + kPictureStep)),
+                !view_.opacityApplies, false, t.opacityHint);
+    y += kSettingStep;
+  }
+  {
     const int now = view_.originForward, limit = kMaxViewpointPercent, step = kViewpointStepPercent;
     addValueRow(x, y, w, 230, t.viewpoint.label, viewpointText(now), now, -limit, limit,
                 command(MenuCommand::SetOriginForward, std::max(-limit, now - step)),

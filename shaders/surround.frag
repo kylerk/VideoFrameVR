@@ -35,7 +35,8 @@ struct SurroundDraw {
   vec4 alpha;
   uvec4 mode;   // x projection: 0 = 180, 1 = 360, 2 = fisheye, 3 = equi-angular
                 // cubemap, 4 = cubemap turned to a 2x3 grid; y flags (video.glsl);
-                // z footprint taps per side at most (footprintSample)
+                // z footprint taps per side at most (footprintSample);
+                // w the Opacity setting, percent (kAlphaOut)
   vec4 yuv;     // kYuv: the planes' range (videoTap)
 };
 DECLARE_PUSH(SurroundDraw)
@@ -298,5 +299,8 @@ void main() {
     c = srgbToLinear(s);
   }
 #endif
+  // The Opacity setting: native passthrough only, as the headset's keyer can't
+  // show a half-green pixel as half see-through.
+  if (alphaOut) alpha *= float(pc.draw.mode.w) * 0.01;
   fragColor = alphaOut ? vec4(c * alpha, alpha) : vec4(mix(kKeyColor, c, alpha), 1.0);
 }

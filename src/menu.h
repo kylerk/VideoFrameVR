@@ -70,7 +70,7 @@ struct MenuCommand {
               SetFoveationOutside, ToggleAdvancedSettings, SetRefreshRate, SetFocus,
               ToggleMotion, SetMotionDistance, ToggleResume, ToggleToneLook, Stop,
               ToggleTvGamma, ToggleSeekPreview, ToggleThumbnails, ToggleShowPerformance, SetScreenDistance,
-              SetScreenHeight, SetScreenCurve, ResetScreen, SetOriginForward,
+              SetScreenHeight, SetScreenCurve, ResetScreen, SetOriginForward, SetOpacity,
               ToggleAutoPassthrough, ToggleVibration,
               // Stash (docs/stash.md): on or off, its server, its switches,
               // Sync now, and the format the Scenes page shows.
@@ -156,6 +156,8 @@ struct MenuView {
   int slideshowSeconds = 0;  // 0 = no slideshow
   // Picture settings of the running video.
   int brightness = 0, contrast = 0, saturation = 0;
+  int opacity = 100;  // over the room with passthrough, percent
+  bool opacityApplies = false;  // the video is blended over the room (alphaPassthrough)
   float zoom = 1.0f;
   int originForward = 0;  // surround viewpoint: percent of the sphere's radius toward the picture
   bool tvGamma = false;  // SDR video converted for a TV's gamma (darker shadows)

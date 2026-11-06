@@ -391,6 +391,7 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
       p.color[c] = kScreenColor[c];
       p.adjust[c] = v.adjust[c];
     }
+    p.color[3] = clear == ClearMode::Transparent ? v.opacity : 1.0f;
     p.adjust[3] = sharpen;
     if (v.texture) flags |= kTexture;
     p.mode[1] = flags;
@@ -430,6 +431,7 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
     else if (v.seeThrough.greenKey > 0) flags |= kChromaKey;
     p.alpha[0] = 0.4f * eye.stereo[0];
     p.alpha[1] = 0.4f * eye.stereo[1];
+    p.mode[3] = static_cast<uint32_t>(v.opacity * 100.0f + 0.5f);
     // The green screen settings (0..100) as the shader's thresholds.
     p.chroma[0] = v.seeThrough.greenKey;
     p.chroma[1] = 0.005f + 0.045f * v.key.softness / 100.0f;

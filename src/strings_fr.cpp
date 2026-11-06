@@ -47,6 +47,8 @@ Strings frenchStrings(const Strings& english) {
   s.brightness = "Luminosité";
   s.contrast = "Contraste";
   s.saturation = "Saturation";
+  s.opacity = "Opacité";
+  s.opacityHint = "Avec le passthrough sur Steam Frame : à quel point la vidéo couvre votre pièce.";
   s.zoom = "Zoom (180°/360°)";
   s.reset = "Réinitialiser";
   s.design = "Style";
@@ -691,7 +693,7 @@ Strings frenchStrings(const Strings& english) {
 
   s.tipAdvanced = "Affiche les réglages fins sur les pages de réglages.";
   s.tipSubtitleRaise = "Monter ou descendre les sous-titres flottants.";
-  s.tipPictureReset = "Réinitialiser luminosité, contraste, saturation, zoom et point de vue de cette vidéo.";
+  s.tipPictureReset = "Réinitialiser luminosité, contraste, saturation, opacité, zoom et point de vue de cette vidéo.";
   s.tipMipmaps = "Lisser la vidéo réduite avec des copies plus petites de chaque image.";
   s.tipMipmapsFrame = "Lisser la vidéo réduite. Coût GPU accru sur le Frame.";
   s.tipSharpen = "Accentuer les contours de toutes les vidéos.";

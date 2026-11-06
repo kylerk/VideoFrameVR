@@ -1377,6 +1377,10 @@ int run(GLFWwindow* window, const Options& opts) {
         app.video.saturation = static_cast<int>(c.value);
         applyPicture(VideoSettings::kSaturation);
         break;
+      case MenuCommand::SetOpacity:  // drawn with each frame: nothing for mpv to do
+        app.video.opacity = std::clamp(static_cast<int>(c.value), 0, 100);
+        storeVideoSoon(VideoSettings::kOpacity);
+        break;
       case MenuCommand::SetZoom:
         app.video.zoom = static_cast<float>(c.value / 100.0);
         applyPicture(VideoSettings::kZoom);
@@ -1389,6 +1393,7 @@ int run(GLFWwindow* window, const Options& opts) {
         break;
       case MenuCommand::ResetPicture:
         app.video.brightness = app.video.contrast = app.video.saturation = 0;
+        app.video.opacity = 100;
         app.video.zoom = 1.0f;
         app.video.originForward = 0;
         applyPicture(VideoSettings::kPicture | VideoSettings::kOrigin);
@@ -2900,6 +2905,8 @@ int run(GLFWwindow* window, const Options& opts) {
       view.brightness = app.video.brightness;
       view.contrast = app.video.contrast;
       view.saturation = app.video.saturation;
+      view.opacity = app.video.opacity;
+      view.opacityApplies = alphaPassthrough;
       view.tvGamma = settings.tvGamma;
       view.zoom = app.video.zoom;
       view.originForward = static_cast<int>(std::lround(app.video.originForward * 100));
@@ -3079,6 +3086,7 @@ int run(GLFWwindow* window, const Options& opts) {
         video.adjust[1] = app.video.contrast / 100.0f;
         video.adjust[2] = app.video.saturation / 100.0f;
       }
+      video.opacity = app.video.opacity / 100.0f;
       video.mipmaps = photo || settings.videoMipmaps;  // photos always have theirs
       video.antiShimmer = antiShimmer;
       video.look = settings.toneLook;

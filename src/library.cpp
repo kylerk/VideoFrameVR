@@ -88,6 +88,7 @@ std::string settingsJson(const VideoSettings& s) {
   if (s.brightness) j["brightness"] = s.brightness;
   if (s.contrast) j["contrast"] = s.contrast;
   if (s.saturation) j["saturation"] = s.saturation;
+  if (s.opacity != 100) j["opacity"] = s.opacity;
   if (s.zoom != 1.0f) j["zoom"] = std::round(s.zoom * 1000.0) / 1000.0;
   if (s.originForward != 0) j["origin_forward"] = s.originForward;
   // Kept off too once chosen by hand, so that it is not switched on by itself.
@@ -143,6 +144,7 @@ bool parseSettings(const std::string& text, VideoSettings& s) {
   s.brightness = field(j, "brightness", 0);
   s.contrast = field(j, "contrast", 0);
   s.saturation = field(j, "saturation", 0);
+  s.opacity = std::clamp(field(j, "opacity", 100), 0, 100);
   s.zoom = field(j, "zoom", 1.0f);
   s.originForward = std::clamp(field(j, "origin_forward", 0.0f), -VideoSettings::kMaxOriginForward,
                                VideoSettings::kMaxOriginForward);

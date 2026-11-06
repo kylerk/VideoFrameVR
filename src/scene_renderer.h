@@ -49,6 +49,7 @@ struct VideoDraw {
   // mask or key is shown (VideoPlayer::setPictureInRenderer); else mpv or the
   // decoded frame's YuvColor adjusts video.
   float adjust[3] = {0, 0, 0};
+  float opacity = 1;            // with native passthrough: how much of the room stays hidden, 0..1
   bool mipmaps = true;          // trilinear through the mipmaps, else the full-size level
   AntiShimmer antiShimmer = AntiShimmer::Off;  // ... sampled over each pixel's footprint
   bool look = false;            // tone curve and vignette
@@ -150,7 +151,7 @@ struct SurroundPush {
   // a packed mask (which has no key), alpha[0] with a key (which has no mask).
   float chroma[4];
   float alpha[4];    // xy: the packed mask's size; kYuv: zw the chroma lookup's offset
-  uint32_t mode[4];  // x projection, y flags, z footprint taps (antiShimmerTaps)
+  uint32_t mode[4];  // x projection, y flags, z footprint taps (antiShimmerTaps), w opacity percent
   float yuv[4];      // kYuv: YuvColor::range
 };
 static_assert(sizeof(SurroundPush) == 144 && offsetof(SurroundPush, mode) == 112,

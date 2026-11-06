@@ -47,6 +47,8 @@ Strings simplifiedChineseStrings(const Strings& english) {
   s.brightness = "亮度";
   s.contrast = "对比度";
   s.saturation = "饱和度";
+  s.opacity = "不透明度";
+  s.opacityHint = "在 Steam Frame 上使用透视时：视频覆盖房间的程度。";
   s.zoom = "缩放 (180°/360°)";
   s.reset = "重置";
   s.design = "外观";
@@ -691,7 +693,7 @@ Strings simplifiedChineseStrings(const Strings& english) {
 
   s.tipAdvanced = "在设置页面显示微调选项。";
   s.tipSubtitleRaise = "上下移动悬浮字幕。";
-  s.tipPictureReset = "重置此视频的亮度、对比度、饱和度、缩放和视点。";
+  s.tipPictureReset = "重置此视频的亮度、对比度、饱和度、不透明度、缩放和视点。";
   s.tipMipmaps = "用每帧的较小副本平滑缩小后的视频。";
   s.tipMipmapsFrame = "平滑缩小后的视频，在 Frame 上占用 GPU 时间。";
   s.tipSharpen = "强化所有视频的边缘。";

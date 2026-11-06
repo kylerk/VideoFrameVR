@@ -47,6 +47,8 @@ Strings brazilianPortugueseStrings(const Strings& english) {
   s.brightness = "Brilho";
   s.contrast = "Contraste";
   s.saturation = "Saturação";
+  s.opacity = "Opacidade";
+  s.opacityHint = "Com passthrough no Steam Frame: o quanto o vídeo cobre o seu ambiente.";
   s.zoom = "Zoom (180°/360°)";
   s.reset = "Redefinir";
   s.design = "Aparência";
@@ -691,7 +693,7 @@ Strings brazilianPortugueseStrings(const Strings& english) {
 
   s.tipAdvanced = "Mostra os ajustes finos nas páginas de configurações.";
   s.tipSubtitleRaise = "Mover legendas flutuantes para cima ou para baixo.";
-  s.tipPictureReset = "Redefinir brilho, contraste, saturação, zoom e ponto de vista deste vídeo.";
+  s.tipPictureReset = "Redefinir brilho, contraste, saturação, opacidade, zoom e ponto de vista deste vídeo.";
   s.tipMipmaps = "Suavizar vídeos reduzidos com cópias menores de cada quadro.";
   s.tipMipmapsFrame = "Suavizar vídeos reduzidos. Usa GPU no Frame.";
   s.tipSharpen = "Realçar bordas em todos os vídeos.";
