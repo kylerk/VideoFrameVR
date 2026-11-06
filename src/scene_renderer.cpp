@@ -365,14 +365,15 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
   // A Q10C frame: its TP10 descriptors, for the pipelines for them (no
   // sharpening: VideoPlayer::setSharpened has mpv convert frames then).
   const bool tp10 = yuv && yuv->tp10() && direct_;
-  auto bind = [&](bool screen, bool maskFirst) {
+  auto bind = [&](bool screen, bool maskFirst, bool keyed) {
     if (tp10) {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines_.tp10(screen, maskFirst, plainEye_));
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipelines_.tp10(screen, maskFirst, keyed, plainEye_));
       direct_->bindTp10(cmd, pipelines_.tp10Layout(), *yuv);
       return;
     }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline(Pipelines::videoPipeline(screen, maskFirst, sharpen > 0.0f)));
+                      pipeline(Pipelines::videoPipeline(screen, maskFirst, keyed, sharpen > 0.0f)));
     pipelines_.bindTextures(cmd, v.texture, sampler, chroma);
   };
 
@@ -399,7 +400,7 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
         p.yuv[i] = yuv->color().range[i];
         p.yuvMatrix[i] = yuv->color().matrix[i];
       }
-    bind(true, false);
+    bind(true, false, false);
     pushEye(cmd, eye);
     pushDraw(cmd, p);
     vkCmdDraw(cmd, 2 * 65, 1, 0, 0);
@@ -424,8 +425,11 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
   if (clear == ClearMode::KeyGreen) flags |= kKeyGreen;
   if (clear == ClearMode::Transparent) flags |= kAlphaOut;
   if (clear != ClearMode::Dark) {
+    // The packed mask is centred on each eye's part at 40% of its size.
     if (v.seeThrough.packedAlpha) flags |= kPackedAlpha;
     else if (v.seeThrough.greenKey > 0) flags |= kChromaKey;
+    p.alpha[0] = 0.4f * eye.stereo[0];
+    p.alpha[1] = 0.4f * eye.stereo[1];
     // The green screen settings (0..100) as the shader's thresholds.
     p.chroma[0] = v.seeThrough.greenKey;
     p.chroma[1] = 0.005f + 0.045f * v.key.softness / 100.0f;
@@ -443,6 +447,10 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
     eye.camera[1] = correct.camera.y;
     eye.camera[2] = correct.camera.z;
   }
+  // What a key reads moves with these (surround.frag: its second read).
+  const bool adjusted = v.adjust[0] != 0.0f || v.adjust[1] != 0.0f || v.adjust[2] != 0.0f ||
+                        (yuv && yuv->color().adjusted);
+  if ((flags & kChromaKey) && adjusted) flags |= kPictureAdjusted;
   p.mode[0] = static_cast<uint32_t>(projection);
   p.mode[1] = flags;
   p.mode[2] = static_cast<uint32_t>(antiShimmerTaps(v.antiShimmer));
@@ -450,14 +458,15 @@ void SceneRenderer::drawVideo(VkCommandBuffer cmd, EyeData eye, int index, const
     const YuvColor& c = yuv->color();
     for (int i = 0; i < 4; ++i) p.yuv[i] = c.range[i];
     for (int i = 0; i < 3; ++i) p.toPicture[i][3] = c.neutralRange[i];
-    p.alpha[1] = c.neutralRange[3];
+    if (flags & kPackedAlpha) p.chroma[0] = c.neutralRange[3];
+    if (flags & kChromaKey) p.alpha[0] = c.neutralRange[3];
     p.params[2] = c.matrix[0];
     p.params[3] = c.matrix[1];
     p.alpha[2] = c.matrix[2];
     p.alpha[3] = c.matrix[3];
   }
   const bool maskFirst = (flags & kPackedAlpha) && (flags & (kKeyGreen | kAlphaOut));
-  bind(false, maskFirst);
+  bind(false, maskFirst, (flags & kChromaKey) != 0);
   pushEye(cmd, eye);
   pushDraw(cmd, p);
   vkCmdDraw(cmd, 3, 1, 0, 0);

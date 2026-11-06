@@ -211,10 +211,13 @@ foreach(shader IN ITEMS
   list(APPEND SHADER_HEADERS ${header})
 endforeach()
 # The video shaders again as variants (name:shader:defines, defines joined
-# by +): with the mask first for packed alpha passthrough, with sharpening,
-# and for Q10C decoder frames (Pipelines, DirectDepth, DirectVideo's stills).
+# by +): with the mask first for packed alpha passthrough, keying a green
+# screen, with sharpening, and for Q10C decoder frames (Pipelines, DirectDepth, DirectVideo's stills).
 foreach(variant
     surround_mask:surround.frag:MASK_FIRST
+    surround_key:surround.frag:KEY
+    surround_key_sharpen:surround.frag:KEY+SHARPEN
+    surround_key_tp10:surround.frag:KEY+TP10
     surround_sharpen:surround.frag:SHARPEN
     surround_mask_sharpen:surround.frag:MASK_FIRST+SHARPEN
     screen_sharpen:screen.frag:SHARPEN

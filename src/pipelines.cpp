@@ -18,6 +18,9 @@
 #include "shaders/screen_sharpen.frag.h"
 #include "shaders/screen_tp10.frag.h"
 #include "shaders/surround.frag.h"
+#include "shaders/surround_key.frag.h"
+#include "shaders/surround_key_sharpen.frag.h"
+#include "shaders/surround_key_tp10.frag.h"
 #include "shaders/surround_mask.frag.h"
 #include "shaders/surround_mask_sharpen.frag.h"
 #include "shaders/surround_mask_tp10.frag.h"
@@ -102,6 +105,10 @@ bool Pipelines::init(GpuContext& gpu, VkRenderPass eyePass, VkRenderPass plainEy
        sizeof(kSpirv_surround_mask_sharpen_frag), VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false},
       {kSpirv_screen_vert, sizeof(kSpirv_screen_vert), kSpirv_screen_sharpen_frag,
        sizeof(kSpirv_screen_sharpen_frag), VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, false},
+      {kSpirv_fullscreen_vert, sizeof(kSpirv_fullscreen_vert), kSpirv_surround_key_frag,
+       sizeof(kSpirv_surround_key_frag), VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false},
+      {kSpirv_fullscreen_vert, sizeof(kSpirv_fullscreen_vert), kSpirv_surround_key_sharpen_frag,
+       sizeof(kSpirv_surround_key_sharpen_frag), VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false},
   };
   static const char* names[kCount] = {"surround",
                                       "screen",
@@ -111,7 +118,9 @@ bool Pipelines::init(GpuContext& gpu, VkRenderPass eyePass, VkRenderPass plainEy
                                       "surround (mask first)",
                                       "surround (sharpened)",
                                       "surround (mask first, sharpened)",
-                                      "screen (sharpened)"};
+                                      "screen (sharpened)",
+                                      "surround (keyed)",
+                                      "surround (keyed, sharpened)"};
   for (int i = 0; i < kCount; ++i) {
     descs_[i] = descs[i];
     pipelines_[i] = create(descs[i], eyePass, names[i]);
@@ -154,16 +163,19 @@ bool Pipelines::initTp10(VkDescriptorSetLayout setLayout) {
   if (!gpu_->check(vkCreatePipelineLayout(gpu_->device(), &layoutInfo, nullptr, &tp10Layout_),
                    "TP10 pipeline layout"))
     return false;
-  const Desc descs[3] = {
+  const Desc descs[4] = {
       {kSpirv_fullscreen_vert, sizeof(kSpirv_fullscreen_vert), kSpirv_surround_tp10_frag,
        sizeof(kSpirv_surround_tp10_frag), VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false},
       {kSpirv_fullscreen_vert, sizeof(kSpirv_fullscreen_vert), kSpirv_surround_mask_tp10_frag,
        sizeof(kSpirv_surround_mask_tp10_frag), VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false},
       {kSpirv_screen_vert, sizeof(kSpirv_screen_vert), kSpirv_screen_tp10_frag,
        sizeof(kSpirv_screen_tp10_frag), VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, false},
+      {kSpirv_fullscreen_vert, sizeof(kSpirv_fullscreen_vert), kSpirv_surround_key_tp10_frag,
+       sizeof(kSpirv_surround_key_tp10_frag), VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false},
   };
-  static const char* names[3] = {"surround (TP10)", "surround (mask first, TP10)", "screen (TP10)"};
-  for (int i = 0; i < 3; ++i) {
+  static const char* names[4] = {"surround (TP10)", "surround (mask first, TP10)", "screen (TP10)",
+                                 "surround (keyed, TP10)"};
+  for (int i = 0; i < 4; ++i) {
     tp10_[i] = create(descs[i], eyePass_, names[i], tp10Layout_);
     if (!tp10_[i]) return false;
     if (plainEyePass_ == eyePass_) continue;

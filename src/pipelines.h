@@ -17,8 +17,9 @@ class Pipelines {
  public:
   // kSurroundMask: surround.frag with the packed mask looked up first, for
   // packed alpha passthrough; the ...Sharpen ones: the video shaders with
-  // sharpening, for a strength above 0 (videoPipeline()). Kept apart: on the
-  // Frame a shader gets much dearer with code in it it never runs.
+  // sharpening, for a strength above 0 (videoPipeline()); kSurroundKey...: a
+  // green screen keyed in passthrough. Kept apart: on the Frame a shader gets
+  // much dearer with code in it it never runs.
   enum Id {
     kSurround,
     kScreen,
@@ -29,12 +30,15 @@ class Pipelines {
     kSurroundSharpen,
     kSurroundMaskSharpen,
     kScreenSharpen,
+    kSurroundKey,
+    kSurroundKeySharpen,
     kCount
   };
   // The video's pipeline: the surround or the flat screen, with the mask
-  // first or not (surround only), sharpened or not.
-  static Id videoPipeline(bool screen, bool maskFirst, bool sharpen) {
+  // first or keyed or neither (surround only), sharpened or not.
+  static Id videoPipeline(bool screen, bool maskFirst, bool keyed, bool sharpen) {
     if (screen) return sharpen ? kScreenSharpen : kScreen;
+    if (keyed) return sharpen ? kSurroundKeySharpen : kSurroundKey;
     if (maskFirst) return sharpen ? kSurroundMaskSharpen : kSurroundMask;
     return sharpen ? kSurroundSharpen : kSurround;
   }
@@ -69,12 +73,12 @@ class Pipelines {
   // again for its float images, and its blur.
   bool initGlass(VkRenderPass glassPass);
   // The video's pipelines for Q10C decoder frames (Frame, DirectVideo): the
-  // unsharpened surround, its mask-first version and the screen, built for
-  // TP10 row bands, with their own layout (setLayout, a descriptor buffer's,
+  // unsharpened surround, its mask-first and keyed versions and the screen,
+  // built for TP10 row bands, with their own layout (setLayout, a descriptor buffer's,
   // and the same push constants).
   bool initTp10(VkDescriptorSetLayout setLayout);
-  VkPipeline tp10(bool screen, bool maskFirst, bool plain) const {
-    const int i = screen ? 2 : maskFirst ? 1 : 0;
+  VkPipeline tp10(bool screen, bool maskFirst, bool keyed, bool plain) const {
+    const int i = screen ? 2 : keyed ? 3 : maskFirst ? 1 : 0;
     return plain && tp10Plain_[i] ? tp10Plain_[i] : tp10_[i];
   }
   VkPipelineLayout tp10Layout() const { return tp10Layout_; }
@@ -113,7 +117,7 @@ class Pipelines {
   VkPipeline foveation_[2] = {};
   VkRenderPass eyePass_ = VK_NULL_HANDLE, plainEyePass_ = VK_NULL_HANDLE;
   VkPipelineLayout tp10Layout_ = VK_NULL_HANDLE;
-  VkPipeline tp10_[3] = {}, tp10Plain_[3] = {};
+  VkPipeline tp10_[4] = {}, tp10Plain_[4] = {};
   VkSampler samplers_[kSamplerCount] = {};
   GpuImage dummyImage_;
   Texture dummy_;

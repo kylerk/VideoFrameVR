@@ -136,6 +136,7 @@ enum VideoFlag : uint32_t {
   kTexture = 256,
   kYuv = 512,
   kTvGamma = 1024,
+  kPictureAdjusted = 2048,
 };
 
 // shaders/surround.frag, SurroundDraw.
@@ -145,8 +146,10 @@ struct SurroundPush {
   float toPicture[3][4];
   float params[4];        // x fisheye field of view (radians), y zoom; zw Kr, Kb (kYuv)
   float adjust[4];  // w: sharpening strength
+  // The green screen's settings. kYuv: neutralRange 3 goes in chroma[0] with
+  // a packed mask (which has no key), alpha[0] with a key (which has no mask).
   float chroma[4];
-  float alpha[4];    // y: kYuv, neutralRange 3; zw: kYuv, the chroma lookup's offset
+  float alpha[4];    // xy: the packed mask's size; kYuv: zw the chroma lookup's offset
   uint32_t mode[4];  // x projection, y flags, z footprint taps (antiShimmerTaps)
   float yuv[4];      // kYuv: YuvColor::range
 };

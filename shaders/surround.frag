@@ -3,7 +3,7 @@
 #ifdef TP10
 #extension GL_EXT_nonuniform_qualifier : require
 #endif
-#ifdef MASK_FIRST
+#if defined(MASK_FIRST) || defined(KEY)
 #extension GL_EXT_control_flow_attributes : require
 // The neighbour loops kept as loops: smaller code, and cheaper on the Frame.
 #define NEIGHBOURS [[dont_unroll]] for
@@ -27,10 +27,12 @@ struct SurroundDraw {
   vec4 adjust;  // brightness, contrast, saturation (-1..1), w sharpening strength (0 = off)
   // Green screen: x = how green is cut away, y = half its soft edge, z =
   // spill removal 0..2, w = shrink: how many texels the cut reaches past
-  // what looks green.
+  // what looks green. A masked draw has no key: x the last of neutralRange().
   vec4 chroma;
-  vec4 alpha;   // x unused; y the last of neutralRange();
-                // zw the chroma lookup's offset (kYuv)
+  // Packed alpha: xy = each eye's mask size, in parts of the frame. A keyed
+  // draw has no mask: x the last of neutralRange(). zw the chroma lookup's
+  // offset (kYuv)
+  vec4 alpha;
   uvec4 mode;   // x projection: 0 = 180, 1 = 360, 2 = fisheye, 3 = equi-angular
                 // cubemap, 4 = cubemap turned to a 2x3 grid; y flags (video.glsl);
                 // z footprint taps per side at most (footprintSample)
@@ -54,9 +56,14 @@ bool isYuv() { return (pc.draw.mode.y & kYuv) != 0u; }
 vec4 yuvMatrix() { return vec4(pc.draw.params.zw, pc.draw.alpha.zw); }
 // A decoded frame's range without brightness, contrast and saturation
 // (YuvColor::neutralRange): the push constants are full, so it sits in their
-// unused parts.
+// unused parts, and what a masked or keyed draw leaves free.
 vec4 neutralRange() {
-  return vec4(pc.draw.toPicture0.w, pc.draw.toPicture1.w, pc.draw.toPicture2.w, pc.draw.alpha.y);
+#ifdef KEY
+  float last = pc.draw.alpha.x;
+#else
+  float last = pc.draw.chroma.x;
+#endif
+  return vec4(pc.draw.toPicture0.w, pc.draw.toPicture1.w, pc.draw.toPicture2.w, last);
 }
 // The frame as it came at p (texture coordinates), full-size level, linear
 // colour: for the mask and the key, which the picture settings must not move.
@@ -80,12 +87,27 @@ vec3 picture(vec2 uv, vec2 lo, vec2 hi, vec2 dx, vec2 dy, EyeData e, uint flags,
   return clamp(applyLook(adjustPicture(c, pc.draw.adjust.xyz), e, flags, fragCoord), 0.0, 1.0);
 }
 
-// DeoVR's packed alpha at uv: each eye's mask, at 40% of its part of the
-// frame, sits centred on the middle of the top edge (left eye) or on the
-// corners (right eye) and wraps around the frame's edges (into the corners and
-// gaps next to the fisheye circles). Its red channel is opacity.
+#ifdef KEY
+// picture() as it is without brightness, contrast and saturation, which the
+// key must not move: with the same taps and look, so it cuts the same edges.
+vec3 plainPicture(vec2 uv, vec2 lo, vec2 hi, vec2 dx, vec2 dy, EyeData e, uint flags, vec2 fragCoord) {
+  vec3 c;
+  if (baseLevel(flags)) {
+    c = footprintSample(tex, chromaTex, isYuv(), neutralRange(), yuvMatrix(), uv, dx, dy, e.stereo, lo,
+                        hi, int(pc.draw.mode.z));
+  } else {
+    vec2 eyeUv = e.stereo.zw + clamp(uv, lo, hi) * e.stereo.xy;
+    c = textureGrad(tex, eyeUv, dx * e.stereo.xy, dy * e.stereo.xy).rgb;
+  }
+  return clamp(applyLook(c, e, flags, fragCoord), 0.0, 1.0);
+}
+#else
+// DeoVR's packed alpha at uv: each eye's mask, at alpha.xy of the frame,
+// sits centred on the middle of the top edge (left eye) or on the corners
+// (right eye) and wraps around the frame's edges (into the corners and gaps
+// next to the fisheye circles). Its red channel is opacity.
 float packedAlpha(vec2 uv, EyeData e, vec2 dx, vec2 dy) {
-  vec2 alphaScale = 0.4 * e.stereo.xy;
+  vec2 alphaScale = pc.draw.alpha.xy;
   vec2 alphaCenter = vec2(e.position.w < 0.5 ? 0.5 : 0.0, 0.0);
   vec2 m = uv - 0.5;
   if (length(m) > 0.5) return 0.0;
@@ -95,13 +117,7 @@ float packedAlpha(vec2 uv, EyeData e, vec2 dx, vec2 dy) {
   // Compression leaves black a little above 0 and full red below 1.
   return smoothstep(0.08, 0.92, red);
 }
-
-// How much of the frame stays at p (texture coordinates) under the green
-// screen key, measured on the frame as it came: dx, dy as sampled there.
-float keyAlpha(vec2 p, vec2 dx, vec2 dy, vec4 chroma) {
-  vec3 t = clamp(isYuv() ? tap(p) : textureGrad(tex, p, dx, dy).rgb, 0.0, 1.0);
-  return chromaAlpha(linearToSrgb(t), chroma);
-}
+#endif
 
 void main() {
   EyeData e = currentEye();
@@ -217,51 +233,70 @@ void main() {
   }
   // Passthrough: how much of the picture stays here.
   float alpha = inside ? 1.0 : 0.0;
+#ifdef KEY
+  // A green screen, in the pipelines for it (Pipelines::kSurroundKey and on):
+  // its reads of the frame, though never run, made every other video draw
+  // dearer on the Frame. Measured on the picture as shown unless brightness
+  // etc. changed that (kPictureAdjusted): then it has to be read a second time.
   vec4 chroma = pc.draw.chroma;
+  bool keyed = (flags & kChromaKey) != 0u && inside;
+  bool adjusted = (flags & kPictureAdjusted) != 0u;
+  if (keyed) {
+    vec3 shown = adjusted ? plainPicture(uv, lo, hi, dx, dy, e, flags, gl_FragCoord.xy) : c;
+    alpha = chromaAlpha(linearToSrgb(shown), chroma);
+    if (chroma.w > 0.0 && alpha > 0.0) {
+      // Shrink: cut where any neighbour that far away is cut.
+      vec2 texel = chroma.w / videoSize(tex, chromaTex);
+      vec2 dxs = dx * eyeScale, dys = dy * eyeScale;
+      NEIGHBOURS (int i = 0; i < 4; ++i) {
+        vec2 o = texel * vec2(i == 0 ? 1.0 : i == 1 ? -1.0 : 0.0, i == 2 ? 1.0 : i == 3 ? -1.0 : 0.0);
+        vec3 t = clamp(isYuv() ? tap(eyeUv + o) : textureGrad(tex, eyeUv + o, dxs, dys).rgb, 0.0, 1.0);
+        alpha = min(alpha, chromaAlpha(linearToSrgb(t), chroma));
+      }
+    }
+  }
+  // Near what is cut away nothing is sharpened, so the cut gets no fringes;
+  // the coverage itself never is.
+  if (sharpened && keyed) {
+    bool edge = alpha < 1.0;
+    NEIGHBOURS (int i = 0; i < 4; ++i) {
+      vec3 near = n[i];
+      if (adjusted) near = plainPicture(nUv[i], lo, hi, dx, dy, e, flags, gl_FragCoord.xy);
+      edge = edge || chromaAlpha(linearToSrgb(near), chroma) < 1.0;
+    }
+    sharpened = !edge;
+  }
+  if (sharpened) c = sharpen(c, n[0], n[1], n[2], n[3], strength);
+  if (keyed) c = srgbToLinear(removeSpill(linearToSrgb(c), chroma.z));
+#else
   bool packed = (flags & kPackedAlpha) != 0u && inside;
-  bool keyed = !packed && (flags & kChromaKey) != 0u && inside;
-  vec2 eyeDx = dx * eyeScale, eyeDy = dy * eyeScale;
   if (packed) {
 #ifdef MASK_FIRST
     alpha = maskAlpha;
 #else
     alpha = packedAlpha(uv, e, dx, dy);
 #endif
-  } else if (keyed) {
-    alpha = keyAlpha(eyeUv, eyeDx, eyeDy, chroma);
-    if (chroma.w > 0.0 && alpha > 0.0) {
-      // Shrink: cut where any neighbour that far away is cut.
-      vec2 texel = chroma.w / videoSize(tex, chromaTex);
-      NEIGHBOURS (int i = 0; i < 4; ++i) {
-        vec2 o = texel * vec2(i == 0 ? 1.0 : i == 1 ? -1.0 : 0.0, i == 2 ? 1.0 : i == 3 ? -1.0 : 0.0);
-        alpha = min(alpha, keyAlpha(eyeUv + o, eyeDx, eyeDy, chroma));
-      }
-    }
   }
   // Near what is cut away nothing is sharpened, so the cut gets no fringes;
   // the coverage itself never is.
-  if (sharpened && (packed || keyed)) {
+  if (sharpened && packed) {
     bool edge = alpha < 1.0;
     NEIGHBOURS (int i = 0; i < 4; ++i)
-      edge = edge || (packed ? packedAlpha(nUv[i], e, dx, dy)
-                             : keyAlpha(eyeOffset + nUv[i] * eyeScale, eyeDx, eyeDy, chroma)) < 1.0;
+      edge = edge || packedAlpha(nUv[i], e, dx, dy) < 1.0;
     sharpened = !edge;
   }
   if (sharpened) c = sharpen(c, n[0], n[1], n[2], n[3], strength);
-  if (packed) {
-    if (keyGreen) {
-      // The picture itself must never look like the key colour, or the
-      // headset would cut holes into it (a green top, say): the key channel
-      // is capped just above the larger other one, in display values, below
-      // what the headset's keyer reacts to.
-      vec3 s = linearToSrgb(c);
-      vec3 rest = s * (vec3(1.0) - kKeyColor);
-      float keyed = dot(s, kKeyColor);
-      s += kKeyColor * (min(keyed, max(max(rest.r, rest.g), rest.b) + 0.02) - keyed);
-      c = srgbToLinear(s);
-    }
-  } else if (keyed) {
-    c = srgbToLinear(removeSpill(linearToSrgb(c), chroma.z));
+  if (packed && keyGreen) {
+    // The picture itself must never look like the key colour, or the
+    // headset would cut holes into it (a green top, say): the key channel
+    // is capped just above the larger other one, in display values, below
+    // what the headset's keyer reacts to.
+    vec3 s = linearToSrgb(c);
+    vec3 rest = s * (vec3(1.0) - kKeyColor);
+    float keyed = dot(s, kKeyColor);
+    s += kKeyColor * (min(keyed, max(max(rest.r, rest.g), rest.b) + 0.02) - keyed);
+    c = srgbToLinear(s);
   }
+#endif
   fragColor = alphaOut ? vec4(c * alpha, alpha) : vec4(mix(kKeyColor, c, alpha), 1.0);
 }

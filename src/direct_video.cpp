@@ -443,6 +443,7 @@ void DirectVideo::computeColor(DirectFrame& f) const {
   c.neutralRange[1] = static_cast<float>(-ymin / yrange);
   c.neutralRange[2] = static_cast<float>(toValue / crange);
   c.neutralRange[3] = static_cast<float>(-128 * s / crange);
+  c.adjusted = brightness_ != 0 || contrast_ != 0 || saturation_ != 0;
   float kr = 0.2126f, kb = 0.0722f;
   if (f.matrix_ == VIDEO_EXPORT_MATRIX_BT601) kr = 0.299f, kb = 0.114f;
   if (f.matrix_ == VIDEO_EXPORT_MATRIX_BT2020) kr = 0.2627f, kb = 0.0593f;
