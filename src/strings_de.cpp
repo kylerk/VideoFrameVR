@@ -115,6 +115,7 @@ Strings germanStrings(const Strings& english) {
   s.tipSearchFolder = "Diesen Ordner durchsuchen";
   s.clear = "Leeren";
   s.noMatches = "Keine Treffer für „%s“ in diesem Ordner";
+  s.playLink = "Das ist ein Link: Tippe auf Fertig, um ihn abzuspielen";
   s.matches = "%d von %d in diesem Ordner";
   s.greenScreen = "Green Screen";
   s.greenScreenHint = "Den Hintergrund des Videos mit den Einstellungen unten entfernen.";

@@ -1011,6 +1011,7 @@ struct Strings {
   const char* tipSearchFolder;
   const char* clear;
   const char* noMatches;  // printf format: the search words
+  const char* playLink;   // instead of noMatches: the search holds a link
   const char* matches;    // printf format: matches, total
   const char* greenScreen;
   const char* greenScreenHint;

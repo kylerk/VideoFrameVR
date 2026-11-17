@@ -395,8 +395,12 @@ void VideoPlayer::load(const std::string& path, double start) {
   // sleeping file's vid=no must never disable the next file or reopen the old.
   const std::string discOptions = bdmv::mpvOptions(path);
   baseViewRight_ = !discOptions.empty();
-  const std::string startOption = "start=" + std::to_string(start) + ",vid=auto,pause=" +
+  std::string startOption = "start=" + std::to_string(start) + ",vid=auto,pause=" +
       (wasAsleep && sleepPaused_ ? "yes" : "no") + discOptions;
+  // A link is titled by the file it names, not by its address (signed
+  // storage links end in their expiry and signature). %n% quotes n bytes.
+  if (const std::string name = linkFileName(path); !name.empty())
+    startOption += ",force-media-title=%" + std::to_string(name.size()) + "%" + name;
   const std::string url = bdmv::isDiscImage(path)  ? bdmv::mpvUrl(path)
                           : !localPartial.empty() ? partial_stream::mpvUrl(path)
                                                   : remote::mpvUrl(path);

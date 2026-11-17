@@ -72,8 +72,9 @@ std::string normalPath(const std::string& path) {
   return normal;
 }
 
+// A link signed anew each time is one video; so are a link's copies.
 std::string keyOf(const std::string& location) {
-  return isStream(location) ? location : normalPath(location);
+  return isStream(location) ? linkIdentity(location) : normalPath(location);
 }
 
 json colourJson(const KeyColour& c) { return json::array({c.r, c.g, c.b}); }
@@ -1183,8 +1184,9 @@ void Library::change(const std::string& location, const Change& c) {
     return;
   }
   if (isStream(location)) {
-    const auto it = byStream_.find(location);
-    apply(it != byStream_.end() ? it->second : addVideo("", location), c);
+    const std::string key = keyOf(location);
+    const auto it = byStream_.find(key);
+    apply(it != byStream_.end() ? it->second : addVideo("", key), c);
     return;
   }
   const std::string path = normalPath(location);

@@ -115,6 +115,7 @@ Strings simplifiedChineseStrings(const Strings& english) {
   s.tipSearchFolder = "搜索此文件夹";
   s.clear = "清除";
   s.noMatches = "此文件夹中没有匹配“%s”的内容";
+  s.playLink = "这是一个链接：按“完成”即可播放";
   s.matches = "此文件夹中 %d / %d 项";
   s.greenScreen = "绿幕抠像";
   s.greenScreenHint = "用下方设置去除视频背景。";

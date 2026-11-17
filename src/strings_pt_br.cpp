@@ -115,6 +115,7 @@ Strings brazilianPortugueseStrings(const Strings& english) {
   s.tipSearchFolder = "Buscar nesta pasta";
   s.clear = "Limpar";
   s.noMatches = "Nenhum resultado para \"%s\" nesta pasta";
+  s.playLink = "Isso é um link: toque em Concluir para reproduzi-lo";
   s.matches = "%d de %d nesta pasta";
   s.greenScreen = "Chroma key";
   s.greenScreenHint = "Remova o fundo do vídeo com os ajustes abaixo.";

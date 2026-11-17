@@ -96,6 +96,7 @@ const Strings kEnglish = {
     "Search this folder",
     "Clear",
     "Nothing in this folder matches “%s”",
+    "That’s a link: press Done to play it",
     "%d of %d in this folder",
     "Green screen",
     "Remove the video's background using the settings below.",

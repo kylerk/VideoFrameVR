@@ -115,6 +115,7 @@ Strings spanishStrings(const Strings& english) {
   s.tipSearchFolder = "Buscar en esta carpeta";
   s.clear = "Borrar";
   s.noMatches = "Sin resultados para \"%s\" en esta carpeta";
+  s.playLink = "Es un enlace: pulsa Listo para reproducirlo";
   s.matches = "%d de %d en esta carpeta";
   s.greenScreen = "Chroma";
   s.greenScreenHint = "Eliminar el fondo del vídeo con los ajustes de abajo.";

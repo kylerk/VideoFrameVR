@@ -115,6 +115,7 @@ Strings japaneseStrings(const Strings& english) {
   s.tipSearchFolder = "このフォルダを検索";
   s.clear = "クリア";
   s.noMatches = "このフォルダに「%s」に一致する項目はありません";
+  s.playLink = "リンクです。完了を押すと再生します";
   s.matches = "このフォルダ内 %d / %d件";
   s.greenScreen = "グリーンバック";
   s.greenScreenHint = "下の設定で動画の背景を除去。";
